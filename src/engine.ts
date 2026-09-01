@@ -1270,6 +1270,7 @@ export class PrimeOrchestration extends Service {
     this.generation = { id: randomUUID().slice(0, 8), mountedAt: new Date().toISOString(), steps: [] }
     this.generations.push(this.generation)
     mkdirSync(join(entry.stateDir, 'delegations'), { recursive: true })
+    mkdirSync(join(entry.stateDir, 'exports'), { recursive: true })
 
     this.exitHandler = () => {
       for (const record of this.records.values()) {
@@ -1798,10 +1799,15 @@ export class PrimeOrchestration extends Service {
         if (args.format !== 'html' && args.format !== 'jsonl') {
           throw new Error('prime_agent export: "format" html | jsonl is required')
         }
+        // Default destination: the engine's own exports dir, not the session's
+        // cwd (a daemon-created session inherits an arbitrary working dir).
+        const defaultPath = args.format === 'html'
+          ? join(this.rowConfig.stateDir, 'exports', `${args.agent}-${new Date().toISOString().replace(/[:.]/g, '-')}.html`)
+          : join(this.rowConfig.stateDir, 'exports', `${args.agent}-${new Date().toISOString().replace(/[:.]/g, '-')}.jsonl`)
         const command: Record<string, unknown> = {
           type: args.format === 'html' ? 'export_html' : 'export_jsonl',
           activeSessionId: args.agent,
-          ...(typeof args.outputPath === 'string' && args.outputPath.length > 0 ? { outputPath: args.outputPath } : {}),
+          ...(typeof args.outputPath === 'string' && args.outputPath.length > 0 ? { outputPath: args.outputPath } : { outputPath: defaultPath }),
         }
         const result = await daemonRequest(this.config, command, 60000)
         if (!result.ok) throw new Error(`prime_agent export: ${result.output}`)
@@ -2313,6 +2319,57 @@ export class PrimeOrchestration extends Service {
         sendJson(res, 200, { ok: true, scope, count: sessions.length, savedSessions: sessions.map(savedSessionView) })
         return
       }
+      const agentParam = (name: string): unknown => {
+        const value = url.searchParams.get(name)
+        return value === null ? undefined : value
+      }
+      const actionRoute = async (action: Exclude<PrimeAction, 'delegate' | 'stop'>, args: Record<string, unknown>): Promise<void> => {
+        try {
+          const result = await this.execute(action, args)
+          sendJson(res, 200, { ok: true, ...(isRecord(result) ? result : {}) })
+        } catch (error) {
+          sendJson(res, 502, { ok: false, error: messageOf(error) })
+        }
+      }
+      const bodyRoute = async (action: Exclude<PrimeAction, 'delegate' | 'stop'>): Promise<void> => {
+        await actionRoute(action, (await readBody(req)) as Record<string, unknown>)
+      }
+      if (url.pathname === '/prime/api/messages' && req.method === 'GET') {
+        await actionRoute('messages', {
+          agent: agentParam('agent'),
+          ...(url.searchParams.get('last') === '1' ? { last: true } : {}),
+        })
+        return
+      }
+      if (url.pathname === '/prime/api/queue' && req.method === 'GET') {
+        await actionRoute('queue', { agent: agentParam('agent') })
+        return
+      }
+      if (url.pathname === '/prime/api/models' && req.method === 'GET') {
+        await actionRoute('models', { agent: agentParam('agent') })
+        return
+      }
+      if (url.pathname === '/prime/api/children' && req.method === 'GET') {
+        await actionRoute('children', { agent: agentParam('agent') })
+        return
+      }
+      if (url.pathname === '/prime/api/rlm_depth' && req.method === 'GET') {
+        await actionRoute('rlm_depth', { agent: agentParam('agent') })
+        return
+      }
+      if (url.pathname === '/prime/api/export' && req.method === 'GET') {
+        await actionRoute('export', { agent: agentParam('agent'), format: agentParam('format') })
+        return
+      }
+      if (url.pathname === '/prime/api/prompt' && req.method === 'POST') { await bodyRoute('prompt'); return }
+      if (url.pathname === '/prime/api/goal_set' && req.method === 'POST') { await bodyRoute('goal_set'); return }
+      if (url.pathname === '/prime/api/goal_action' && req.method === 'POST') { await bodyRoute('goal_action'); return }
+      if (url.pathname === '/prime/api/queue_action' && req.method === 'POST') { await bodyRoute('queue_action'); return }
+      if (url.pathname === '/prime/api/set_model' && req.method === 'POST') { await bodyRoute('set_model'); return }
+      if (url.pathname === '/prime/api/abort' && req.method === 'POST') { await bodyRoute('abort'); return }
+      if (url.pathname === '/prime/api/rlm_depth' && req.method === 'POST') { await bodyRoute('rlm_depth'); return }
+      if (url.pathname === '/prime/api/child_action' && req.method === 'POST') { await bodyRoute('child_action'); return }
+      if (url.pathname === '/prime/api/saved_session_action' && req.method === 'POST') { await bodyRoute('saved_session_action'); return }
       sendJson(res, 404, { ok: false, error: 'not found' })
     } catch (error) {
       sendJson(res, 500, { ok: false, error: messageOf(error) })

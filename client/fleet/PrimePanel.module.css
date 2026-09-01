@@ -759,3 +759,12 @@
   font-size: 13px;
   color: var(--dsw-alias-label-primary);
 }
+
+/* Live transcript: taller than the event stream, user rows highlighted. */
+.msgStream {
+  max-height: 340px;
+  overflow-y: auto;
+}
+.msgUser {
+  font-weight: 600;
+}

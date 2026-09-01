@@ -6,7 +6,7 @@ It turns a dsh agent into an orchestrator over [Prime Agent](https://pypi.org/pr
 
 - **Host engine** (`ctx.prime`): the shared delegation table, one-shot CLI runs, the protocol-7 daemon socket client, the `/prime` JSON API, and the `prime-orchestrator` settings namespace.
 - **Model-facing surface**: the `prime_agent` tool (delegate, monitor, steer, coordinate, set and manage persistent goals, heartbeats, prompt running sessions, read transcripts, inspect and manage recursive subagents, switch models mid-session, control queue and recursion depth, fork branches, export transcripts, and manage prime-agent sessions), the `prime-orchestrator:workflow` prompt section, and the bundled `prime-agent` skill.
-- **Web UI**: the Prime fleet column (right side of the Web GUI, toggle at the sidebar foot) with live delegation/session/event streams, and the Settings → Prime Orchestration section.
+- **Web UI**: the Prime fleet column (right side of the Web GUI, toggle at the sidebar foot) with live delegation/session/event streams, and the Settings → Prime Orchestration section. Drill into any running prime-agent session for its live transcript, a prompt box (text or slash commands), turn controls (abort, queue, goal, model switch), and the `prime-agent attach` command to take it over in a TUI — the web view and the TUI share the same daemon session.
 - **Agent preset**: `prime-orchestrator` — the full coding agent plus the orchestration surface, derived from `standard`. Sessions can pick it from the preset picker.
 
 ## Install

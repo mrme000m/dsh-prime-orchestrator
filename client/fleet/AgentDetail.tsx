@@ -15,6 +15,7 @@ import type {
   PrimeAgent, PrimeApi, PrimeDelegation, PrimeEventSummary, PrimeHeartbeat, PrimeSessionInspection,
 } from './api.ts'
 import type { Selection } from './PrimePanel.tsx'
+import { LiveSession } from './LiveSession.tsx'
 import type { PrimePanelProps } from './PrimePanel.tsx'
 import css from './PrimePanel.module.css'
 
@@ -99,6 +100,11 @@ export function AgentDetail(props: AgentDetailProps) {
   const heartbeatTarget = selection.kind === 'session' && agent !== undefined && agent.daemonBacked
     ? agent.id ?? undefined
     : undefined
+
+  // A daemon-backed session gets the live surface: transcript, prompt box,
+  // turn controls, and the TUI attach command. Its prompt composer replaces
+  // the agent-to-agent steer box (typing here IS typing in the TUI session).
+  const liveAgent = heartbeatTarget
 
   const send = (): void => {
     const text = message.trim()
@@ -232,6 +238,10 @@ export function AgentDetail(props: AgentDetailProps) {
         </section>
       )}
 
+      {liveAgent !== undefined && (
+        <LiveSession agent={liveAgent} api={api} t={t} onChanged={props.onChanged} />
+      )}
+
       <section className={css.section}>
         <div className={css.sectionLabel}>{t('detail.events')}</div>
         {props.error !== undefined && <p className={css.noticeError}>{t('detail.events.failed', { message: props.error })}</p>}
@@ -242,7 +252,7 @@ export function AgentDetail(props: AgentDetailProps) {
         </div>
       </section>
 
-      {steerTarget !== undefined && (
+      {steerTarget !== undefined && liveAgent === undefined && (
         <div className={css.steerBox}>
           <textarea
             className={css.steerInput}

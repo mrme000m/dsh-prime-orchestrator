@@ -567,10 +567,187 @@ function makePrimeApi(fetchLike: PrimeFetch): PrimeApi {
       return await json<PrimeSavedSessionsResult>(
         await fetchLike(`/prime/api/saved_sessions?scope=${encodeURIComponent(scope)}`))
     },
+    /** Live conversation of a running session; last=true returns only the final assistant text. */
+    async messages(agent: string, last?: boolean): Promise<PrimeMessagesResult> {
+      return await json<PrimeMessagesResult>(await fetchLike(
+        `/prime/api/messages?agent=${encodeURIComponent(agent)}${last === true ? '&last=1' : ''}`))
+    },
+    /** Pending steering and follow-up lanes of a running session. */
+    async queue(agent: string): Promise<PrimeQueueResult> {
+      return await json<PrimeQueueResult>(await fetchLike(
+        `/prime/api/queue?agent=${encodeURIComponent(agent)}`))
+    },
+    /** Drop queued input (clear) or also cancel the running turn (abort_clear). */
+    async queueAction(agent: string, op: 'clear' | 'abort_clear'): Promise<PrimeQueueMutationResult> {
+      return await json<PrimeQueueMutationResult>(await fetchLike('/prime/api/queue_action', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ agent, op }),
+      }))
+    },
+    /** Deliver a prompt or slash command to a running session (delivery steer/follow_up/queue). */
+    async prompt(input: { agent: string; message: string; delivery?: 'steer' | 'follow_up' }): Promise<PrimePromptResult> {
+      return await json<PrimePromptResult>(await fetchLike('/prime/api/prompt', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(input),
+      }))
+    },
+    /** Models a running session can switch to. */
+    async models(agent: string): Promise<PrimeModelsResult> {
+      return await json<PrimeModelsResult>(await fetchLike(
+        `/prime/api/models?agent=${encodeURIComponent(agent)}`))
+    },
+    /** Switch a running session's model (provider+modelId or cycle). */
+    async setModel(input: { agent: string; provider?: string; modelId?: string; cycle?: 'forward' | 'backward'; thinkingLevel?: string }): Promise<PrimeSetModelResult> {
+      return await json<PrimeSetModelResult>(await fetchLike('/prime/api/set_model', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(input),
+      }))
+    },
+    /** Set a persistent goal on a running session. */
+    async goalSet(input: { agent: string; goal: string; tokenBudget?: number }): Promise<PrimeGoalMutationResult> {
+      return await json<PrimeGoalMutationResult>(await fetchLike('/prime/api/goal_set', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(input),
+      }))
+    },
+    /** Manage a running session's persistent goal. */
+    async goalAction(agent: string, goalControlAction: 'pause' | 'resume' | 'clear' | 'stop' | 'status'): Promise<PrimeGoalMutationResult> {
+      return await json<PrimeGoalMutationResult>(await fetchLike('/prime/api/goal_action', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ agent, goalControlAction }),
+      }))
+    },
+    /** Cancel a running session's current turn. */
+    async abort(agent: string): Promise<PrimeAbortResult> {
+      return await json<PrimeAbortResult>(await fetchLike('/prime/api/abort', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ agent }),
+      }))
+    },
+    /** The session's own rlm subagent rows. */
+    async children(agent: string): Promise<{ ok: boolean; agent: string; count: number; children: PrimeChildRow[] }> {
+      return await json<{ ok: boolean; agent: string; count: number; children: PrimeChildRow[] }>(await fetchLike(
+        `/prime/api/children?agent=${encodeURIComponent(agent)}`))
+    },
+    /** Read (no arg) or set the session's max rlm recursion depth. */
+    async rlmDepth(agent: string, maxDepth?: number): Promise<PrimeDepthResult> {
+      return await json<PrimeDepthResult>(await fetchLike('/prime/api/rlm_depth', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ agent, ...(maxDepth === undefined ? {} : { maxDepth }) }),
+      }))
+    },
+    /** Export a running session's transcript. */
+    async exportSession(agent: string, format: 'html' | 'jsonl'): Promise<PrimeExportResult> {
+      return await json<PrimeExportResult>(await fetchLike(
+        `/prime/api/export?agent=${encodeURIComponent(agent)}&format=${format}`))
+    },
   }
 }
 
 /** The delegated api face (what registration injects into the panel). */
+/** One bounded conversation row from the daemon's get_messages projection. */
+export interface PrimeMessageRow {
+  role: string | undefined
+  name: string | undefined
+  tool: string | undefined
+  text: string | undefined
+}
+
+/** GET /prime/api/messages — live conversation of a running session. */
+export interface PrimeMessagesResult {
+  ok: boolean
+  action: 'messages'
+  agent: string
+  count?: number
+  messages?: PrimeMessageRow[]
+  last?: boolean
+  text?: string
+}
+
+/** GET /prime/api/queue — the session's pending steering and follow-up lanes. */
+export interface PrimeQueueResult {
+  ok: boolean
+  agent: string
+  steering: string[]
+  followUp: string[]
+}
+
+/** One switchable model row from the daemon catalog. */
+export interface PrimeModelRow {
+  provider: string | undefined
+  id: string | undefined
+  name: string | undefined
+  reasoning: boolean
+  contextWindow: number | undefined
+  maxTokens: number | undefined
+}
+
+/** GET /prime/api/models — the models a running session can switch to. */
+export interface PrimeModelsResult {
+  ok: boolean
+  agent: string
+  count: number
+  models: PrimeModelRow[]
+}
+
+/** POST /prime/api/prompt — deliver work or a slash command to a running session. */
+export interface PrimePromptResult {
+  ok: boolean
+  action: 'prompt'
+  agent: string
+  delivered?: boolean
+  disposition?: string
+}
+
+/** POST /prime/api/goal_set or goal_action. */
+export interface PrimeGoalMutationResult {
+  ok: boolean
+  agent: string
+}
+
+/** POST /prime/api/queue_action. */
+export interface PrimeQueueMutationResult {
+  ok: boolean
+  agent: string
+  op: string
+}
+
+/** POST /prime/api/abort — cancel the running turn. */
+export interface PrimeAbortResult {
+  ok: boolean
+  agent: string
+}
+
+/** GET /prime/api/rlm_depth — recursion depth status. */
+export interface PrimeDepthResult {
+  ok: boolean
+  agent: string
+  maxDepth?: number
+  source?: string
+}
+
+/** GET /prime/api/export — transcript export receipt. */
+export interface PrimeExportResult {
+  ok: boolean
+  agent: string
+  format: string
+  path: string | undefined
+}
+
+/** POST /prime/api/set_model — mid-session model switch receipt. */
+export interface PrimeSetModelResult {
+  ok: boolean
+  action: 'set_model'
+  agent: string
+}
+
 export interface PrimeApi {
   /** Probe + roster snapshot; also the availability gate for the whole plugin. */
   state(): Promise<PrimeState>
@@ -612,4 +789,40 @@ export interface PrimeApi {
   waitForIdle(agent: string): Promise<PrimeWaitForIdleResult>
   /** List saved (draft) sessions via the daemon. */
   savedSessions(scope?: 'current' | 'all'): Promise<PrimeSavedSessionsResult>
+  /** Live conversation of a running session; last=true returns only the final assistant text. */
+  messages(agent: string, last?: boolean): Promise<PrimeMessagesResult>
+  /** Pending steering and follow-up lanes of a running session. */
+  queue(agent: string): Promise<PrimeQueueResult>
+  /** Drop queued input (clear) or also cancel the running turn (abort_clear). */
+  queueAction(agent: string, op: 'clear' | 'abort_clear'): Promise<PrimeQueueMutationResult>
+  /** Deliver a prompt or slash command to a running session (delivery steer/follow_up/queue). */
+  prompt(input: { agent: string; message: string; delivery?: 'steer' | 'follow_up' }): Promise<PrimePromptResult>
+  /** Models a running session can switch to. */
+  models(agent: string): Promise<PrimeModelsResult>
+  /** Switch a running session's model (provider+modelId or cycle). */
+  setModel(input: { agent: string; provider?: string; modelId?: string; cycle?: 'forward' | 'backward'; thinkingLevel?: string }): Promise<PrimeSetModelResult>
+  /** Set a persistent goal on a running session. */
+  goalSet(input: { agent: string; goal: string; tokenBudget?: number }): Promise<PrimeGoalMutationResult>
+  /** Manage a running session's persistent goal. */
+  goalAction(agent: string, goalControlAction: 'pause' | 'resume' | 'clear' | 'stop' | 'status'): Promise<PrimeGoalMutationResult>
+  /** Cancel a running session's current turn. */
+  abort(agent: string): Promise<PrimeAbortResult>
+  /** The session's own rlm subagent rows. */
+  children(agent: string): Promise<{ ok: boolean; agent: string; count: number; children: PrimeChildRow[] }>
+  /** Read (no arg) or set the session's max rlm recursion depth. */
+  rlmDepth(agent: string, maxDepth?: number): Promise<PrimeDepthResult>
+  /** Export a running session's transcript. */
+  exportSession(agent: string, format: 'html' | 'jsonl'): Promise<PrimeExportResult>
+}
+
+/** One rlm subagent row from the children projection. */
+export interface PrimeChildRow {
+  id: string | undefined
+  sessionName: string | undefined
+  label: string | undefined
+  status: string | undefined
+  model: string | undefined
+  tokens: number | undefined
+  replied: boolean
+  answerPreview: string | undefined
 }

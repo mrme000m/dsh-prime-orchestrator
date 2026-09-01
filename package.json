@@ -1,6 +1,6 @@
 {
   "name": "dsh-prime-orchestrator",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Prime Agent orchestration for DeepSeek Harness (dsh): the host-plane delegation engine (ctx.prime, /prime JSON API, prime-orchestrator settings namespace), the model-facing prime_agent tool with its workflow prompt section and bundled prime-agent skill, the Web-GUI Prime fleet column and settings section, and the prime-orchestrator agent preset — materialized into your user preset root at startup with sha256-marked, user-edit-preserving upgrade semantics.",
   "type": "module",
   "license": "MIT",
@@ -38,7 +38,7 @@
   "scripts": {
     "build": "tsdown",
     "prepare": "tsdown",
-    "test": "node --test tests/",
+    "test": "node --test",
     "verify": "npm run build && npm test && npm pack --dry-run",
     "typecheck": "tsc --noEmit"
   },

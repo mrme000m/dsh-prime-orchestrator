@@ -20,7 +20,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { PrimeOrchestration, type Config } from './engine.ts'
+import { PrimeOrchestration, type Config as RowConfig } from './engine.ts'
 import { materializePresetOnBoot } from './preset.ts'
 import { installLayoutOverride } from './layout-override.ts'
 
@@ -31,7 +31,10 @@ export const name = 'dsh-prime-orchestrator'
 export const Config = PrimeOrchestration.Config
 
 export { PrimeOrchestration } from './engine.ts'
-export { promptDaemonSession, rlmChildView, resolvePrimeConfig, daemonRequest, inspectSession } from './engine.ts'
+export {
+  promptDaemonSession, rlmChildView, modelView, messageView,
+  resolvePrimeConfig, daemonRequest, inspectSession,
+} from './engine.ts'
 export type { Config as PrimeRowConfig } from './engine.ts'
 export type {
   PrimeAction, PrimeConfig, PrimeDelegateRequest, PrimeDelegation, PrimeGeneration,
@@ -44,7 +47,7 @@ export type {
  * @param ctx - Cordis root context of the row mounting this entry.
  * @param config - resolved row config (bin, stateDir, daemonSocket, maxDelegations).
  */
-export function apply(ctx: Context, config: Config): void {
+export function apply(ctx: Context, config: RowConfig): void {
   materializePresetOnBoot(ctx)
   new PrimeOrchestration(ctx, config)
   ctx.inject(['webServer'], (webCtx: Context) => {

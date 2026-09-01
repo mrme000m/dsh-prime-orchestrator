@@ -38,6 +38,9 @@ const PRIME_ACTIONS = [
   'heartbeat_get', 'heartbeat_set', 'heartbeat_action', 'agent_messages',
   'refine', 'rename', 'compact', 'wait_for_idle', 'saved_sessions', 'shutdown',
   'prompt', 'goal_set', 'goal_action', 'children', 'abort',
+  'models', 'set_model', 'queue', 'queue_action', 'messages',
+  'child_action', 'export', 'fork_points', 'fork', 'rlm_depth',
+  'saved_session_action',
 ] as const
 
 /** Plugin config: the model-facing tool name, overridable for distinct instances. */
@@ -95,6 +98,18 @@ interface PrimeAgentArgs {
   scope?: 'current' | 'all'
   tokenBudget?: number
   goalControlAction?: 'pause' | 'resume' | 'clear' | 'stop' | 'status'
+  modelId?: string
+  cycle?: 'forward' | 'backward'
+  thinkingLevel?: string
+  op?: 'clear' | 'abort_clear' | 'cancel' | 'delete' | 'rename'
+  last?: boolean
+  childId?: string
+  format?: 'html' | 'jsonl'
+  outputPath?: string
+  entryId?: string
+  position?: 'before' | 'at'
+  maxDepth?: number
+  sessionPath?: string
 }
 
 /** The orchestration workflow, rendered into the agent's system prompt. */
@@ -106,7 +121,7 @@ For every non-trivial human request, run this loop:
 2. GOAL: call create_goal with the elaborated objective — the human's intent restated as one verifiable completion condition.
 3. DECOMPOSE the goal into independent, verifiable work packages small enough for one prime-agent session each. When the codebase has several independent parts to change, split the work by part (one worker per subsystem or file area) so workers do not edit the same files.
 4. DELEGATE each package with the prime_agent tool (action delegate). Every delegated task must be fully self-contained — prime-agent sessions do NOT see this conversation: include the goal, exact file paths, constraints, and acceptance criteria. Pass a persistent objective with delegate "goal", and bound long-running work with "autonomous" plus its gate/turn/token/timeout flags. Choose the working directory deliberately: prime-agent runs with your user's permissions and is NOT a sandbox, so delegate only into trusted workspaces. Give each worker a distinct scope and tell it which file areas the OTHER workers own, so parallel workers do not collide.
-5. MANAGE: poll prime_agent action status/events; discover the fleet with action agents (each row's id is its daemon active session id, the address for messaging/heartbeats); surface a running session's goal lifecycle and idle state with action goal/session; check background-service health with action doctor; steer a running prime-agent session with action send or send_message; give new work or run a session command (/goal, /autonomous, /refine, /compact) with action prompt; set, then later pause or clear, a running session's persistent goal with action goal_set/goal_action; inspect a worker's own recursive subagent tree with action children; cancel a runaway TURN with action abort, and a runaway SESSION with action stop. Never wait idle: while delegations run, verify finished work or prepare integration yourself.
+5. MANAGE: poll prime_agent action status/events; discover the fleet with action agents (each row's id is its daemon active session id, the address for messaging/heartbeats); surface a running session's goal lifecycle and idle state with action goal/session; check background-service health with action doctor; steer a running prime-agent session with action send or send_message; give new work or run a session command (/goal, /autonomous, /refine, /compact) with action prompt; set, then later pause or clear, a running session's persistent goal with action goal_set/goal_action; inspect a worker's own recursive subagent tree with action children; cancel a runaway TURN with action abort, and a runaway SESSION with action stop; swap a failing worker's model with action set_model (list choices with models), read its transcript with action messages (last: true for the final answer), drop stale queued input with action queue_action, cap or expand its recursion with action rlm_depth, and branch a misdirected worker at an earlier message with action fork_points + fork. Never wait idle: while delegations run, verify finished work or prepare integration yourself.
 6. COORDINATE parallel workers: when several prime agents work on different parts of the code, use action agents to find each worker's id, then action send_message (delivery "steer" to interrupt a busy worker, "follow_up" to queue after its turn) to pass results, warnings, and integration instructions between them. Prime-agent workers can also message each other directly, but the orchestrator owns cross-worker hand-offs and conflict avoidance. Have each worker write results to distinct files and report a short completion summary, then read those files yourself to integrate the parts.
 7. HEARTBEATS: for long-running delegated sessions, set a recurring checkpoint with action heartbeat_set ("schedule" like "every 5m"; "message" is the checkpoint prompt; "delivery" steer interrupts, follow_up queues). Heartbeats are per-session and self-updating: read a session's current heartbeat with action heartbeat_get, and when a session reports progress or a new checkpoint in its replies (via events/session), re-issue heartbeat_set with the updated schedule/message to move the checkpoint forward — heartbeat_set replaces the session's existing heartbeat. Pause/resume/stop a heartbeat with action heartbeat_action, and clear a finished session's heartbeat (heartbeat_action "clear") so it stops prompting. A heartbeat set on a subagent session id is a nested heartbeat, managed by the same routes.
 8. VERIFY: when a delegation finishes, inspect the actual files or run the checks yourself. For daemon-backed goal sessions, confirm completion with prime_agent action goal/session (look for a COMPLETED compaction and a fresh goalId) — reaching an autonomous limit is a ceiling, not a pass. Then clear the session's persistent goal (goal_action clear) and its heartbeat (heartbeat_action clear). Only report or complete the goal; re-delegate with corrections when a result misses its acceptance criteria.
@@ -140,7 +155,18 @@ const TOOL_DESCRIPTION = `Delegate, monitor, and manage Prime Agent (prime-agent
 - goal_set: set a persistent goal on a running session ("agent", "goal" = objective, optional "tokenBudget") — the session keeps working toward it across turns until complete/paused/cleared.
 - goal_action: manage a running session's persistent goal ("agent", "goalControlAction" pause/resume/clear/stop/status).
 - children: list the RLM subagents a running session has spawned itself ("agent") — name, status, model, token/tool counts, answer preview, session dir. Use it to inspect a worker's recursive delegation tree.
-- abort: cancel a running session's current turn ("agent") without stopping the session.`
+- abort: cancel a running session's current turn ("agent") without stopping the session.
+- models: list the models a running session can switch to ("agent") — provider, id, reasoning, context window, cost.
+- set_model: switch a running session's model ("agent" + "provider"+"modelId", or "cycle": forward/backward; optional "thinkingLevel"). Applies from the next turn — also a way to unstick a session on a failing model.
+- queue: read a running session's pending steering and follow-up lanes ("agent").
+- queue_action: clear queued messages ("agent", "op": clear) or also cancel the running turn ("op": abort_clear).
+- messages: read a running session's conversation ("agent"; bounded rows; "last": true returns only the final assistant text).
+- child_action: cancel ("op": cancel) or delete ("op": delete) one of the session's own rlm subagents ("agent"+"childId" from children).
+- export: export a running session's transcript ("agent", "format": html|jsonl, optional "outputPath") — returns the written file path.
+- fork_points: list a running session's user messages with entry ids — the branch points for fork.
+- fork: branch a running session at an earlier user message ("agent"+"entryId" from fork_points, optional "position": before|at) to retry a different approach without losing the original.
+- rlm_depth: read ("agent") or set ("agent"+"maxDepth", optional "global") a running session's max rlm recursion depth — cap or expand how deeply it may spawn its own subagents.
+- saved_session_action: rename ("op": rename, "name") or delete ("op": delete) a saved session by "sessionPath" from saved_sessions.`
 
 /** Skill catalog description and routing guidance, kept beside the tool wording. */
 const SKILL_DESCRIPTION = `Drive the prime-agent CLI (PrimeIntellect's self-improving RLM harness) from this agent: print/JSON/RPC modes, daemon-backed sessions, goals, heartbeats, and agent-to-agent messaging. Prefer the prime_agent tool for delegation, coordination, and heartbeat management; use this skill for daemon control and session forensics.`
@@ -196,11 +222,23 @@ export function apply(ctx: Context, config: Config): void {
       message: { type: 'string', description: 'send/send_message/heartbeat_set: the steering or checkpoint message text.' },
       limit: { type: 'integer', description: 'events/session: maximum trailing events to return (events default 20/max 100, session default 30/max 200).' },
       model: { type: 'string', description: 'delegate: prime-agent --model override.' },
-      provider: { type: 'string', description: 'delegate: prime-agent --provider override.' },
+      provider: { type: 'string', description: 'delegate: prime-agent --provider override. set_model: provider of the model to switch to (from models).' },
       thinking: { type: 'string', description: 'delegate: prime-agent --thinking level.' },
       goal: { type: 'string', description: 'delegate: a persistent objective passed as --goal. goal_set: the persistent objective to set on a running session.' },
       tokenBudget: { type: 'integer', description: 'goal_set: optional token budget for the persistent goal (--budget).' },
       goalControlAction: { type: 'string', enum: ['pause', 'resume', 'clear', 'stop', 'status'], description: 'goal_action: the persistent-goal management operation on a running session.' },
+      modelId: { type: 'string', description: 'set_model: model id to switch to (from models); the switch applies from the next turn.' },
+      cycle: { type: 'string', enum: ['forward', 'backward'], description: 'set_model: cycle to the next/previous model in the session catalog instead of naming one.' },
+      thinkingLevel: { type: 'string', description: 'set_model: optional thinking level for the new model (valid levels vary by model; check models).' },
+      op: { type: 'string', enum: ['clear', 'abort_clear', 'cancel', 'delete', 'rename'], description: 'queue_action: clear (drop queued messages) or abort_clear (also cancel the running turn). child_action: cancel or delete an rlm child. saved_session_action: rename or delete a saved session.' },
+      last: { type: 'boolean', description: 'messages: return only the last assistant text (the worker current final answer) instead of the whole conversation.' },
+      childId: { type: 'string', description: 'child_action: the rlm child id from children.' },
+      format: { type: 'string', enum: ['html', 'jsonl'], description: 'export: output format.' },
+      outputPath: { type: 'string', description: 'export: optional destination file; the daemon picks a default next to the session when omitted.' },
+      entryId: { type: 'string', description: 'fork: the user-message entry id from fork_points to branch at.' },
+      position: { type: 'string', enum: ['before', 'at'], description: 'fork: insert the new branch before or at the chosen entry (default at).' },
+      maxDepth: { type: 'integer', description: 'rlm_depth: set the session max rlm recursion depth (omit to read the current status).' },
+      sessionPath: { type: 'string', description: 'saved_session_action: saved session file path from saved_sessions.' },
       goalTokenBudget: { type: 'integer', description: 'delegate: --goal-token-budget (positive int).' },
       continue: { type: 'boolean', description: 'delegate: resume the most recent session (--continue).' },
       resume: { type: 'string', description: 'delegate: resume a specific session by id or path (--resume).' },
@@ -229,7 +267,7 @@ export function apply(ctx: Context, config: Config): void {
       autonomousMaxContinuations: { type: 'integer', description: 'delegate: --autonomous-max-continuations (positive int).' },
       instructions: { type: 'string', description: 'refine/compact: optional instructions for the harness refinement or compaction.' },
       rollbackId: { type: 'string', description: 'refine: optional refinement id to roll back to.' },
-      global: { type: 'boolean', description: 'refine: apply the refinement globally (defaults to session-local).' },
+      global: { type: 'boolean', description: 'refine: apply the refinement globally (defaults to session-local). rlm_depth: persist the depth setting globally.' },
       name: { type: 'string', description: 'rename: the new session name.' },
       scope: { type: 'string', enum: ['current', 'all'], description: 'saved_sessions: "current" lists saved sessions under cwd, "all" lists every saved session (default current).' },
     },

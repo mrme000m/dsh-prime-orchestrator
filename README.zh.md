@@ -7,7 +7,7 @@
 它把一个 dsh agent 变成 [Prime Agent](https://pypi.org/project/prime-agent/)（`prime-agent` CLI）会话的编排者：
 
 - **宿主引擎**（`ctx.prime`）：共享委托表、一次性 CLI 运行、protocol-7 守护进程套接字客户端、`/prime` JSON API 与 `prime-orchestrator` 设置命名空间。
-- **模型侧**：`prime_agent` 工具（委派、监控、转向、协调、设置与管理持久目标、心跳、向运行中会话下发提示、检查递归子代理、管理 prime-agent 会话）、`prime-orchestrator:workflow` 提示段，以及内置的 `prime-agent` 技能。
+- **模型侧**：`prime_agent` 工具（委派、监控、转向、协调、设置与管理持久目标、心跳、向运行中会话下发提示、读取对话记录、检查与管理递归子代理、运行中切换模型、管理队列与递归深度、分支重试、导出会话、管理 prime-agent 会话）、`prime-orchestrator:workflow` 提示段，以及内置的 `prime-agent` 技能。
 - **Web 界面**：Prime 舰队侧栏（Web 界面右侧，侧栏底部开关），实时展示委托/会话/事件流；以及 设置 → Prime 编排 分区。
 - **Agent 预设**：`prime-orchestrator` —— 基于 `standard` 的完整编码 agent 加编排能力，会话可从预设选择器选用。
 

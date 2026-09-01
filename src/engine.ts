@@ -884,7 +884,7 @@ export function defaultDaemonSocket(): string {
  * steering (starts immediately when the session is idle).
  * @returns the daemon's admission receipt.
  */
-export async function promptDaemonSession(config: PrimeConfig, agent: string, message: string, delivery?: 'steer' | 'follow_up'): Promise<{ delivered: boolean; receipt: unknown }> {
+export async function promptDaemonSession(config: PrimeConfig, agent: string, message: string, delivery?: 'steer' | 'follow_up'): Promise<{ delivered: boolean; receipt: unknown; disposition?: string }> {
   const command: Record<string, unknown> = {
     type: 'prompt',
     activeSessionId: agent,
@@ -902,6 +902,47 @@ export async function promptDaemonSession(config: PrimeConfig, agent: string, me
   if (!result.ok) throw new Error(`prime_agent prompt: ${result.output}`)
   const data = isRecord(result.data) ? result.data : {}
   return { delivered: true, receipt: result.data, disposition: typeof data.status === 'string' ? data.status : undefined }
+}
+
+/** Project one `get_available_models` entry into a stable, model-friendly row. */
+export function modelView(model: unknown): Record<string, unknown> {
+  const m = asRecord(model)
+  return {
+    provider: typeof m.provider === 'string' ? m.provider : undefined,
+    id: typeof m.id === 'string' ? m.id : undefined,
+    name: typeof m.name === 'string' ? m.name : undefined,
+    reasoning: m.reasoning === true,
+    input: Array.isArray(m.input) ? m.input.filter((v): v is string => typeof v === 'string') : undefined,
+    contextWindow: typeof m.contextWindow === 'number' ? m.contextWindow : undefined,
+    maxTokens: typeof m.maxTokens === 'number' ? m.maxTokens : undefined,
+    ...(isRecord(m.cost) ? { cost: m.cost } : {}),
+  }
+}
+
+/** Extract display text from a content string or block list, bounded to `limit` chars. */
+function messageText(content: unknown, limit: number): string | undefined {
+  if (typeof content === 'string') return content.slice(0, limit)
+  if (!Array.isArray(content)) return undefined
+  let out = ''
+  for (const block of content) {
+    if (out.length >= limit) break
+    const b = asRecord(block)
+    const text = typeof b.text === 'string' ? b.text : undefined
+    if (text === undefined) continue
+    out = out.length === 0 ? text.slice(0, limit) : `${out}\n${text}`.slice(0, limit)
+  }
+  return out.length > 0 ? out : undefined
+}
+
+/** Project one conversation message into a bounded, model-friendly row. */
+export function messageView(message: unknown, limit = 500): Record<string, unknown> {
+  const m = asRecord(message)
+  return {
+    role: typeof m.role === 'string' ? m.role : undefined,
+    ...(typeof m.name === 'string' ? { name: m.name } : {}),
+    ...(typeof m.toolName === 'string' ? { tool: m.toolName } : {}),
+    text: messageText(m.content, limit),
+  }
 }
 
 /** Project one `get_rlm_children` snapshot into a stable, model-friendly row. */
@@ -1610,7 +1651,8 @@ export class PrimeOrchestration extends Service {
         if (typeof args.message !== 'string' || args.message.trim().length === 0) {
           throw new Error('prime_agent prompt: "message" is required')
         }
-        return { action: 'prompt', agent: args.agent, ...(await promptDaemonSession(this.config, args.agent, args.message, args.delivery)) }
+        const delivery = args.delivery === 'steer' || args.delivery === 'follow_up' ? args.delivery : undefined
+        return { action: 'prompt', agent: args.agent, ...(await promptDaemonSession(this.config, args.agent, args.message, delivery)) }
       }
       case 'goal_set': {
         if (typeof args.agent !== 'string' || args.agent.length === 0) {
@@ -1660,6 +1702,177 @@ export class PrimeOrchestration extends Service {
         if (!result.ok) throw new Error(`prime_agent abort: ${result.output}`)
         return { action: 'abort', ok: true, agent: args.agent, result: result.data }
       }
+      case 'models': {
+        if (typeof args.agent !== 'string' || args.agent.length === 0) {
+          throw new Error('prime_agent models: "agent" (daemon active session id) is required')
+        }
+        const result = await daemonRequest(this.config, { type: 'get_available_models', activeSessionId: args.agent }, 30000)
+        if (!result.ok) throw new Error(`prime_agent models: ${result.output}`)
+        const models = isRecord(result.data) && Array.isArray(result.data.models) ? result.data.models : []
+        return { action: 'models', agent: args.agent, count: models.length, models: models.map(modelView) }
+      }
+      case 'set_model': {
+        if (typeof args.agent !== 'string' || args.agent.length === 0) {
+          throw new Error('prime_agent set_model: "agent" (daemon active session id) is required')
+        }
+        const cycle = args.cycle === 'forward' || args.cycle === 'backward' ? args.cycle : undefined
+        if (cycle === undefined && (typeof args.provider !== 'string' || args.provider.length === 0 || typeof args.modelId !== 'string' || args.modelId.length === 0)) {
+          throw new Error('prime_agent set_model: "provider" + "modelId" (from models), or "cycle": forward|backward, is required')
+        }
+        const command: Record<string, unknown> = cycle === undefined
+          ? { type: 'set_model', activeSessionId: args.agent, provider: args.provider, modelId: args.modelId }
+          : { type: 'cycle_model', activeSessionId: args.agent, direction: cycle }
+        const result = await daemonRequest(this.config, command, 60000)
+        if (!result.ok) throw new Error(`prime_agent set_model: ${result.output}`)
+        if (typeof args.thinkingLevel === 'string' && args.thinkingLevel.length > 0) {
+          const thinking = await daemonRequest(this.config, { type: 'set_thinking_level', activeSessionId: args.agent, level: args.thinkingLevel }, 30000)
+          if (!thinking.ok) throw new Error(`prime_agent set_model: model set, but thinking level failed: ${thinking.output}`)
+        }
+        return { action: 'set_model', agent: args.agent, ...(isRecord(result.data) ? result.data : {}), ...(typeof args.thinkingLevel === 'string' ? { thinkingLevel: args.thinkingLevel } : {}) }
+      }
+      case 'queue': {
+        if (typeof args.agent !== 'string' || args.agent.length === 0) {
+          throw new Error('prime_agent queue: "agent" (daemon active session id) is required')
+        }
+        const result = await daemonRequest(this.config, { type: 'get_queue', activeSessionId: args.agent }, 15000)
+        if (!result.ok) throw new Error(`prime_agent queue: ${result.output}`)
+        const data = isRecord(result.data) ? result.data : {}
+        const lane = (value: unknown): string[] => (Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [])
+        return {
+          action: 'queue',
+          agent: args.agent,
+          steering: lane(data.steering),
+          followUp: lane(data.followUp),
+        }
+      }
+      case 'queue_action': {
+        if (typeof args.agent !== 'string' || args.agent.length === 0) {
+          throw new Error('prime_agent queue_action: "agent" (daemon active session id) is required')
+        }
+        if (args.op !== 'clear' && args.op !== 'abort_clear') {
+          throw new Error('prime_agent queue_action: "op" clear | abort_clear is required')
+        }
+        const command = args.op === 'clear'
+          ? { type: 'clear_queue', activeSessionId: args.agent }
+          : { type: 'abort_and_clear_queue', activeSessionId: args.agent }
+        const result = await daemonRequest(this.config, command, 30000)
+        if (!result.ok) throw new Error(`prime_agent queue_action: ${result.output}`)
+        return { action: 'queue_action', agent: args.agent, op: args.op, ok: true }
+      }
+      case 'messages': {
+        if (typeof args.agent !== 'string' || args.agent.length === 0) {
+          throw new Error('prime_agent messages: "agent" (daemon active session id) is required')
+        }
+        if (args.last === true) {
+          const result = await daemonRequest(this.config, { type: 'get_last_assistant_text', activeSessionId: args.agent }, 15000)
+          if (!result.ok) throw new Error(`prime_agent messages: ${result.output}`)
+          const text = isRecord(result.data) && typeof result.data.text === 'string' ? result.data.text : undefined
+          return { action: 'messages', agent: args.agent, last: true, text }
+        }
+        const result = await daemonRequest(this.config, { type: 'get_messages', activeSessionId: args.agent }, 30000)
+        if (!result.ok) throw new Error(`prime_agent messages: ${result.output}`)
+        const messages = isRecord(result.data) && Array.isArray(result.data.messages) ? result.data.messages : []
+        return { action: 'messages', agent: args.agent, count: messages.length, messages: messages.map((m) => messageView(m)) }
+      }
+      case 'child_action': {
+        if (typeof args.agent !== 'string' || args.agent.length === 0) {
+          throw new Error('prime_agent child_action: "agent" (daemon active session id) is required')
+        }
+        if (typeof args.childId !== 'string' || args.childId.length === 0) {
+          throw new Error('prime_agent child_action: "childId" (from children) is required')
+        }
+        if (args.op !== 'cancel' && args.op !== 'delete') {
+          throw new Error('prime_agent child_action: "op" cancel | delete is required')
+        }
+        const command = args.op === 'cancel'
+          ? { type: 'cancel_rlm_child', activeSessionId: args.agent, childId: args.childId }
+          : { type: 'delete_rlm_subagent', activeSessionId: args.agent, childId: args.childId }
+        const result = await daemonRequest(this.config, command, 30000)
+        if (!result.ok) throw new Error(`prime_agent child_action: ${result.output}`)
+        return { action: 'child_action', agent: args.agent, childId: args.childId, op: args.op, ok: true }
+      }
+      case 'export': {
+        if (typeof args.agent !== 'string' || args.agent.length === 0) {
+          throw new Error('prime_agent export: "agent" (daemon active session id) is required')
+        }
+        if (args.format !== 'html' && args.format !== 'jsonl') {
+          throw new Error('prime_agent export: "format" html | jsonl is required')
+        }
+        const command: Record<string, unknown> = {
+          type: args.format === 'html' ? 'export_html' : 'export_jsonl',
+          activeSessionId: args.agent,
+          ...(typeof args.outputPath === 'string' && args.outputPath.length > 0 ? { outputPath: args.outputPath } : {}),
+        }
+        const result = await daemonRequest(this.config, command, 60000)
+        if (!result.ok) throw new Error(`prime_agent export: ${result.output}`)
+        const path = isRecord(result.data) && typeof result.data.path === 'string' ? result.data.path : undefined
+        return { action: 'export', agent: args.agent, format: args.format, path }
+      }
+      case 'fork_points': {
+        if (typeof args.agent !== 'string' || args.agent.length === 0) {
+          throw new Error('prime_agent fork_points: "agent" (daemon active session id) is required')
+        }
+        const result = await daemonRequest(this.config, { type: 'get_user_messages_for_forking', activeSessionId: args.agent }, 15000)
+        if (!result.ok) throw new Error(`prime_agent fork_points: ${result.output}`)
+        const raw = isRecord(result.data) && Array.isArray(result.data.messages) ? result.data.messages : []
+        const forkPoints = raw.map((m) => {
+          const r = asRecord(m)
+          return {
+            entryId: typeof r.entryId === 'string' ? r.entryId : undefined,
+            text: typeof r.text === 'string' ? r.text.slice(0, 300) : undefined,
+          }
+        })
+        return { action: 'fork_points', agent: args.agent, count: forkPoints.length, forkPoints }
+      }
+      case 'fork': {
+        if (typeof args.agent !== 'string' || args.agent.length === 0) {
+          throw new Error('prime_agent fork: "agent" (daemon active session id) is required')
+        }
+        if (typeof args.entryId !== 'string' || args.entryId.length === 0) {
+          throw new Error('prime_agent fork: "entryId" (from fork_points) is required')
+        }
+        const position = args.position === 'before' || args.position === 'at' ? args.position : undefined
+        const result = await daemonRequest(this.config, { type: 'fork', activeSessionId: args.agent, entryId: args.entryId, ...(position === undefined ? {} : { position }) }, 60000)
+        if (!result.ok) throw new Error(`prime_agent fork: ${result.output}`)
+        return { action: 'fork', agent: args.agent, entryId: args.entryId, ...(position === undefined ? {} : { position }), ...(isRecord(result.data) ? result.data : {}) }
+      }
+      case 'rlm_depth': {
+        if (typeof args.agent !== 'string' || args.agent.length === 0) {
+          throw new Error('prime_agent rlm_depth: "agent" (daemon active session id) is required')
+        }
+        if (args.maxDepth === undefined) {
+          const result = await daemonRequest(this.config, { type: 'get_rlm_max_depth_status', activeSessionId: args.agent }, 15000)
+          if (!result.ok) throw new Error(`prime_agent rlm_depth: ${result.output}`)
+          return { action: 'rlm_depth', agent: args.agent, ...(isRecord(result.data) ? result.data : {}) }
+        }
+        if (typeof args.maxDepth !== 'number' || !Number.isInteger(args.maxDepth) || args.maxDepth < 0) {
+          throw new Error('prime_agent rlm_depth: "maxDepth" must be a non-negative integer')
+        }
+        const command: Record<string, unknown> = { type: 'set_rlm_max_depth', activeSessionId: args.agent, maxDepth: args.maxDepth }
+        if (args.global === true) command.global = true
+        const result = await daemonRequest(this.config, command, 30000)
+        if (!result.ok) throw new Error(`prime_agent rlm_depth: ${result.output}`)
+        return { action: 'rlm_depth', agent: args.agent, maxDepth: args.maxDepth, ...(args.global === true ? { global: true } : {}), ...(isRecord(result.data) ? result.data : {}) }
+      }
+      case 'saved_session_action': {
+        if (typeof args.sessionPath !== 'string' || args.sessionPath.length === 0) {
+          throw new Error('prime_agent saved_session_action: "sessionPath" (from saved_sessions) is required')
+        }
+        if (args.op === 'rename') {
+          if (typeof args.name !== 'string' || args.name.trim().length === 0) {
+            throw new Error('prime_agent saved_session_action: "name" is required for rename')
+          }
+          const result = await daemonRequest(this.config, { type: 'rename_saved_session', sessionPath: args.sessionPath, name: args.name.trim() }, 30000)
+          if (!result.ok) throw new Error(`prime_agent saved_session_action: ${result.output}`)
+          return { action: 'saved_session_action', op: 'rename', sessionPath: args.sessionPath, name: args.name.trim(), ok: true }
+        }
+        if (args.op === 'delete') {
+          const result = await daemonRequest(this.config, { type: 'delete_saved_session', sessionPath: args.sessionPath }, 30000)
+          if (!result.ok) throw new Error(`prime_agent saved_session_action: ${result.output}`)
+          return { action: 'saved_session_action', op: 'delete', sessionPath: args.sessionPath, ok: true }
+        }
+        throw new Error('prime_agent saved_session_action: "op" rename | delete is required')
+      }
       case 'saved_sessions': {
         const scope = args.scope === 'all' ? 'all' : 'current'
         const command: Record<string, unknown> = {
@@ -1673,7 +1886,7 @@ export class PrimeOrchestration extends Service {
         return { action: 'saved_sessions', scope, count: sessions.length, savedSessions: sessions.map(savedSessionView) }
       }
       default:
-        throw new Error(`prime_agent: unknown action "${String(action)}" (delegate|status|events|sessions|send|send_message|agents|stop|doctor|goal|session|heartbeats|heartbeat_get|heartbeat_set|heartbeat_action|agent_messages|refine|rename|compact|wait_for_idle|saved_sessions|shutdown|prompt|goal_set|goal_action|children|abort)`)
+        throw new Error(`prime_agent: unknown action "${String(action)}" (delegate|status|events|sessions|send|send_message|agents|stop|doctor|goal|session|heartbeats|heartbeat_get|heartbeat_set|heartbeat_action|agent_messages|refine|rename|compact|wait_for_idle|saved_sessions|shutdown|prompt|goal_set|goal_action|children|abort|models|set_model|queue|queue_action|messages|child_action|export|fork_points|fork|rlm_depth|saved_session_action)`)
     }
   }
 

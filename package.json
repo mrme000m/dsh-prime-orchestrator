@@ -1,0 +1,114 @@
+{
+  "name": "dsh-prime-orchestrator",
+  "version": "0.1.0",
+  "description": "Prime Agent orchestration for DeepSeek Harness (dsh): the host-plane delegation engine (ctx.prime, /prime JSON API, prime-orchestrator settings namespace), the model-facing prime_agent tool with its workflow prompt section and bundled prime-agent skill, the Web-GUI Prime fleet column and settings section, and the prime-orchestrator agent preset \u2014 materialized into your user preset root at startup with sha256-marked, user-edit-preserving upgrade semantics.",
+  "type": "module",
+  "license": "MIT",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./agent-tool": {
+      "types": "./lib/agent-tool.d.ts",
+      "default": "./lib/agent-tool.js"
+    },
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/index.js.map",
+    "lib/index.d.ts",
+    "lib/agent-tool.js",
+    "lib/agent-tool.js.map",
+    "lib/agent-tool.d.ts",
+    "lib/client.js",
+    "lib/client.js.map",
+    "cordis.patch.yml",
+    "presets/**",
+    "skills/**",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "prepare": "tsdown",
+    "test": "node --test tests/",
+    "verify": "npm run build && npm test && npm pack --dry-run",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22.19"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "prime-agent",
+    "orchestration",
+    "delegation",
+    "agent-preset",
+    "dsh-plugin"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-primitives",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-api-remotes"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-home-paths": "0.1.0-rc.7 || 0.1.1-rc.2",
+    "@deepseek-ai/dsh-host-webserver": "0.1.0-rc.7 || 0.1.1-rc.2",
+    "@deepseek-ai/dsh-llm": "0.1.0-rc.7 || 0.1.1-rc.2",
+    "@deepseek-ai/dsh-skill": "0.1.0-rc.7 || 0.1.1-rc.2",
+    "@deepseek-ai/dsh-settings": "0.1.0-rc.7 || 0.1.1-rc.2",
+    "@deepseek-ai/dsh-system-prompt": "0.1.0-rc.7 || 0.1.1-rc.2",
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.7 || 0.1.1-rc.2",
+    "react": "^18.2.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-api-remotes": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-connection": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-locale": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-runtime": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-layout": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-sidebar": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-slots": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-home-paths": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-host-webserver": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-llm": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-skill": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-settings": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-system-prompt": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-tools": "0.1.1-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "@types/react": "~18.3.1",
+    "react": "^18.2.0",
+    "tsdown": "^0.22.2",
+    "typescript": "^6.0.3",
+    "lightningcss": "^1.29.0",
+    "@types/node": "^22.0.0",
+    "clsx": "^2.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

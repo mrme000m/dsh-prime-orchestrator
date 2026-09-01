@@ -1,0 +1,67 @@
+/* Prime fleet trigger at the sidebar foot: a full-width labeled row while
+   the sidebar is wide, a bare icon on the collapsed rail. Mirrors the
+   settings-trigger geometry (SidebarRoot's foot area). */
+
+.toggle {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.toggle:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.toggle:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 1px;
+}
+
+/* Rail form: a 24px icon column centered in the 56px rail (SidebarRoot). */
+.rail {
+  justify-content: center;
+  width: 24px;
+  padding: 6px 0;
+  margin: 0 auto;
+}
+
+.label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Running-count badge: state-tinted dot-nub on the row, a corner pip on the rail. */
+.badge {
+  margin-left: auto;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--dsw-alias-state-business-tertiary);
+  color: var(--dsw-alias-label-primary);
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.badgeRail {
+  position: absolute;
+  top: 0;
+  right: -2px;
+  margin: 0;
+  min-width: 14px;
+  padding: 0 4px;
+  line-height: 14px;
+}

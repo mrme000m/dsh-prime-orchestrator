@@ -1,0 +1,37 @@
+# dsh-prime-orchestrator bundle patch.
+#
+# Installing this package through the official CLI —
+#
+#   dsh plugin --profile web add dsh-prime-orchestrator
+#   (or: dsh plugin --profile web add github:<owner>/dsh-prime-orchestrator)
+#
+# — reconciles `dsh.profile.bundles` against installed packages and, seeing
+# the `dsh.bundle.patch` declaration in package.json, appends this package to
+# the profile's bundle stack. The profile boot then merges this patch: one
+# insert of the host row.
+#
+# The single row carries the whole feature:
+#   - node half  (exports "."):        the Prime Orchestration engine
+#                                      (ctx.prime, /prime JSON API, the
+#                                      prime-orchestrator settings namespace)
+#                                      plus startup materialization of the
+#                                      `prime-orchestrator` agent preset into
+#                                      your user preset root
+#                                      ($DSH_HOME/.agent-presets).
+#   - agent half  (exports
+#     "./agent-tool"):                 mounted by the materialized preset's
+#                                      agent.cordis.yml — the prime_agent
+#                                      tool, the workflow prompt section, and
+#                                      the bundled prime-agent skill.
+#   - browser half (exports "./client",
+#     declared via dsh.client):        the Prime fleet column, its
+#                                      sidebar-foot trigger, and the Settings →
+#                                      Prime Orchestration section.
+#
+# If a profile already carries a manual mount line for this plugin (or for
+# the older @deepseek-ai/dsh-prime-* workspace packages) in its own
+# cordis.patch.yml, remove it before switching to the bundle channel to
+# avoid double-mounting.
+- insert:
+    - id: prime-orchestration
+      name: 'dsh-prime-orchestrator'

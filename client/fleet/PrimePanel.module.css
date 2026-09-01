@@ -1,0 +1,761 @@
+/* Prime fleet column: header + fleet pulse over tabbed bodies, a drill-in
+   detail, and the pinned delegate composer. The signature move is the
+   status spine — every roster card carries its lifecycle state as a 3px
+   left edge in the state-alias families, mirroring the StateDot semantic
+   beside it. Everything else stays quiet: alias tokens only. */
+
+.root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  background: var(--dsw-alias-bg-base);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-primary);
+}
+
+/* The collapsed column keeps the subtree mounted but inert: no pointer
+   painting over the zero-width strip. */
+.root[data-collapsed] {
+  pointer-events: none;
+}
+
+.header {
+  flex: none;
+  padding: 14px 12px 10px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+}
+
+.titleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
+}
+
+.titleIcon {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.iconButton {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+
+.iconButton:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.iconButton:focus-visible,
+.back:focus-visible,
+.sessionRow:focus-visible,
+.card:focus-visible,
+.delegateToggle:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 1px;
+}
+
+.spinning {
+  animation: prime-spin 1s linear infinite;
+}
+
+@keyframes prime-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinning {
+    animation: none;
+  }
+}
+
+/* Fleet pulse: the live count strip under the title. */
+.statusLine {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.statusError {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.retry {
+  border: none;
+  padding: 0;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.globalError {
+  margin: 10px 16px 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--dsw-alias-interactive-bg-hover-danger);
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.tabs {
+  display: flex;
+  gap: 6px;
+  flex: none;
+  padding: 10px 16px 0;
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 16px 12px;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ── roster card ─────────────────────────────────────────────────────── */
+
+.card {
+  position: relative;
+  padding: 10px 12px 10px 14px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-left-width: 3px;
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-1);
+  cursor: pointer;
+  transition: border-color var(--ds-transition-duration-fast) var(--ds-ease-in-out);
+}
+
+.card:hover {
+  border-color: var(--dsw-alias-border-l3);
+}
+
+/* The status spine: the lifecycle state as a colored left edge. */
+.card[data-status='running'] {
+  border-left-color: var(--dsw-alias-state-business-primary);
+}
+
+.card[data-status='exited'] {
+  border-left-color: var(--dsw-alias-state-success-primary);
+}
+
+.card[data-status='failed'] {
+  border-left-color: var(--dsw-alias-state-error-primary);
+}
+
+.card[data-status='stopped'] {
+  border-left-color: var(--dsw-alias-state-warn-primary);
+}
+
+.cardHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cardId {
+  font-family: var(--ds-font-family-code);
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.cardState {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.state-running {
+  color: var(--dsw-alias-state-business-primary);
+}
+
+.state-exited {
+  color: var(--dsw-alias-state-success-primary);
+}
+
+.state-failed {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.state-stopped {
+  color: var(--dsw-alias-state-warn-label);
+}
+
+.stateOk {
+  color: var(--dsw-alias-state-success-primary);
+}
+
+.stateBad,
+.stateWarn {
+  color: var(--dsw-alias-state-warn-label);
+}
+
+.cardAge {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.cardTask {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  margin: 6px 0 0;
+  color: var(--dsw-alias-label-primary);
+}
+
+.cardLast {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.cardMeta {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.cardError {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.cardActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+/* ── sessions tab ────────────────────────────────────────────────────── */
+
+.sessionRow {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font: inherit;
+  color: var(--dsw-alias-label-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.sessionRow:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.sessionId {
+  font-family: var(--ds-font-family-code);
+  font-size: 12px;
+}
+
+.sessionSize {
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.sessionAge {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* ── daemon agents roster ────────────────────────────────────────────── */
+
+.roster {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rosterGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rosterLabel {
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.agentRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 8px;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agentRow:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.agentRow:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 1px;
+}
+
+.agentDot {
+  flex: none;
+  margin-top: 5px;
+}
+
+.agentBody {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.agentName {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  color: var(--dsw-alias-label-primary);
+}
+
+.agentMeta {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.agentChips {
+  flex: none;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+  white-space: nowrap;
+}
+
+/* ── services tab ────────────────────────────────────────────────────── */
+
+.serviceRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.section {
+  margin: 4px 0;
+}
+
+.sectionLabel {
+  margin-bottom: 6px;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* ── detail drill-in ─────────────────────────────────────────────────── */
+
+.detail {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 16px;
+}
+
+.detailHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: none;
+  padding: 4px 6px 4px 2px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.back:hover {
+  color: var(--dsw-alias-label-primary);
+}
+
+.detailState {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.detailTask {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--dsw-alias-label-primary);
+}
+
+.detailMeta {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.detailMono {
+  font-family: var(--ds-font-family-code);
+}
+
+.detailActions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.goalStrip {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--dsw-alias-interactive-bg-hover);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.goalActive {
+  background: var(--dsw-alias-state-business-tertiary);
+  color: var(--dsw-alias-label-primary);
+}
+
+/* Event stream: monospace, newest at the bottom, quiet separators. */
+.eventStream {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.eventRow {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--dsw-alias-markdown-code-block);
+  font-family: var(--ds-font-family-code);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.eventType {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.eventText {
+  color: var(--dsw-alias-label-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.eventTools {
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.eventGoal {
+  color: var(--dsw-alias-state-business-primary);
+}
+
+/* Steering composer pinned under the stream. */
+.steerBox {
+  flex: none;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+
+.steerInput {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+}
+
+.steerInput:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 1px;
+}
+
+.steerRow {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+/* ── delegate composer (pinned footer) ───────────────────────────────── */
+
+.delegateForm {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 16px 14px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+
+.delegateToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  border: none;
+  padding: 4px 2px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.delegateToggle:hover {
+  color: var(--dsw-alias-label-primary);
+}
+
+.delegateMore {
+  font-weight: 400;
+  font-size: 12px;
+}
+
+.delegatePlus,
+.chevron {
+  transition: transform var(--ds-transition-duration-fast) var(--ds-ease-in-out);
+}
+
+.delegatePlusOpen,
+.chevronOpen {
+  transform: rotate(45deg);
+}
+
+.chevronOpen {
+  transform: rotate(0deg);
+}
+
+.chevron {
+  transform: rotate(-90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .delegatePlus,
+  .chevron {
+    transition: none;
+  }
+}
+
+.taskInput {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 64px;
+  padding: 8px 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+}
+
+.taskInput:focus-visible,
+.fieldInput:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 1px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fieldLabel {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.fieldInput {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 12px;
+}
+
+.flagGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.checkField {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ── notices + empty states ──────────────────────────────────────────── */
+
+.notice,
+.noticeError {
+  margin: 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--dsw-alias-state-success-tertiary);
+  color: var(--dsw-alias-label-primary);
+}
+
+.noticeError {
+  background: var(--dsw-alias-interactive-bg-hover-danger);
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.noticeIcon {
+  flex: none;
+}
+
+.empty {
+  padding: 14px 4px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.emptyTitle {
+  margin-bottom: 4px;
+  color: var(--dsw-alias-label-secondary);
+  font-weight: 500;
+}
+
+/* ── heartbeat tab ────────────────────────────────────────────────────── */
+
+.hbForm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 0;
+}
+
+.hbField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.hbInput,
+.hbSelect {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--dsw-alias-interactive-border);
+  border-radius: 6px;
+  background: var(--dsw-alias-interactive-bg);
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+}
+
+.hbRow {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hbRadio {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--dsw-alias-label-primary);
+}

@@ -24,15 +24,16 @@
     "lib/agent-tool.js",
     "lib/agent-tool.js.map",
     "lib/agent-tool.d.ts",
+    "lib/client.js",
     "lib/client.js.map",
+    "lib/layout-override.js",
+    "lib/layout-override.js.map",
     "cordis.patch.yml",
     "presets/**",
     "skills/**",
     "README.md",
     "README.zh.md",
-    "LICENSE",
-    "lib/layout-override.js",
-    "lib/layout-override.js.map"
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsdown",

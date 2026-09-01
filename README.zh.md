@@ -19,8 +19,11 @@
 # npm（发布后）
 dsh plugin --profile web add dsh-prime-orchestrator
 
-# git 检出（pnpm 通过 prepare 脚本构建；pnpm ≥10 需先按提示放行构建）
+# git 检出（pnpm ≥10 需先放行一次构建——失败的安装会打印确切补救方式）
 dsh plugin --profile web add github:<owner>/dsh-prime-orchestrator
+# 若 pnpm 阻止了构建：在 <profile>/pnpm-workspace.yaml 里加入后重试：
+#   allowBuilds:
+#     dsh-prime-orchestrator: true
 
 # 本地检出（按当前 lib/ 原样安装）
 dsh plugin --profile web add ./path/to/dsh-prime-orchestrator
@@ -66,6 +69,14 @@ pnpm run typecheck
 - `client/` —— 浏览器侧（`client/index.tsx` 为插件入口；`fleet/`、`settings/` 为界面）。
 - `presets/prime-orchestrator/` —— agent 预设内容；`skills/prime-agent/` —— 内置技能。
 - `tsdown.config.ts` —— 宿主 ESM 构建（peer 外置）+ 浏览器 CJS 闭包工厂构建（lightningcss 编译 CSS Modules，保留模块表外置项）。
+
+## 从手工部署的工作区构建迁移
+
+如果你此前通过手工复制的工作区构建（`@deepseek-ai/dsh-prime-orchestration`、`@deepseek-ai/dsh-prime-agent-tool`、`@deepseek-ai/dsh-client-ui-prime`、`@deepseek-ai/dsh-client-ui-prime-settings`）挂载 Prime 功能：
+
+1. 从 profile 的 `cordis.patch.yml` 删除这些行，以及被补丁进官方 web 组合的 `ui-prime` / `ui-prime-settings` 行。
+2. 从 profile 的 `package.json` 删除它们的 `link:` 依赖。
+3. 删除旧的 `$DSH_HOME/.agent-presets/prime-orchestrator/`（前提是你从未编辑过），本包会在下次启动时物化自己的副本。
 
 ## 卸载
 

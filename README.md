@@ -17,9 +17,12 @@ Requires the `dsh` CLI (`@deepseek-ai/dsh`) on the host and the `prime-agent` CL
 # from npm (when published)
 dsh plugin --profile web add dsh-prime-orchestrator
 
-# from a git checkout (pnpm builds it via the prepare script; pnpm ≥10 asks
-# you to allowlist the build first — see the message it prints)
+# from a git checkout (pnpm ≥10 builds it via the prepare script after you
+# allowlist the build once — the failed install prints the exact remedy)
 dsh plugin --profile web add github:<owner>/dsh-prime-orchestrator
+# if pnpm blocks the build: add to <profile>/pnpm-workspace.yaml, then re-run:
+#   allowBuilds:
+#     dsh-prime-orchestrator: true
 
 # from a local checkout (ships the current lib/ as-is)
 dsh plugin --profile web add ./path/to/dsh-prime-orchestrator
@@ -65,6 +68,18 @@ pnpm run typecheck
 - `client/` — browser half (`client/index.tsx` is the plugin entry; `fleet/` and `settings/` carry the UI).
 - `presets/prime-orchestrator/` — the agent preset payload; `skills/prime-agent/` — the bundled skill.
 - `tsdown.config.ts` — host ESM build (peers external) + browser CJS closure-factory build (CSS Modules compiled by lightningcss, module-table externals preserved).
+
+## Migrating from a workspace-based deployment
+
+If you previously mounted the Prime feature through hand-copied workspace
+builds (`@deepseek-ai/dsh-prime-orchestration`, `@deepseek-ai/dsh-prime-agent-tool`,
+`@deepseek-ai/dsh-client-ui-prime`, `@deepseek-ai/dsh-client-ui-prime-settings`):
+
+1. Remove their rows from your profile's `cordis.patch.yml` and any `ui-prime` /
+   `ui-prime-settings` rows patched into the stock web composition.
+2. Remove their `link:` entries from the profile's `package.json`.
+3. Delete the old `$DSH_HOME/.agent-presets/prime-orchestrator/` (if you never
+   edited it) so this package materializes its own on the next boot.
 
 ## Uninstall
 

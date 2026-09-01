@@ -24,14 +24,15 @@
     "lib/agent-tool.js",
     "lib/agent-tool.js.map",
     "lib/agent-tool.d.ts",
-    "lib/client.js",
     "lib/client.js.map",
     "cordis.patch.yml",
     "presets/**",
     "skills/**",
     "README.md",
     "README.zh.md",
-    "LICENSE"
+    "LICENSE",
+    "lib/layout-override.js",
+    "lib/layout-override.js.map"
   ],
   "scripts": {
     "build": "tsdown",
@@ -106,7 +107,8 @@
     "typescript": "^6.0.3",
     "lightningcss": "^1.29.0",
     "@types/node": "^22.0.0",
-    "clsx": "^2.0.0"
+    "clsx": "^2.0.0",
+    "@deepseek-ai/dsh-client-ui-theme": "0.1.1-rc.2"
   },
   "publishConfig": {
     "access": "public"

@@ -22,6 +22,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { PrimeOrchestration, type Config } from './engine.ts'
 import { materializePresetOnBoot } from './preset.ts'
+import { installLayoutOverride } from './layout-override.ts'
 
 /** Cordis plugin name for the host row this package's patch inserts. */
 export const name = 'dsh-prime-orchestrator'
@@ -45,4 +46,7 @@ export type {
 export function apply(ctx: Context, config: Config): void {
   materializePresetOnBoot(ctx)
   new PrimeOrchestration(ctx, config)
+  ctx.inject(['webServer'], (webCtx: Context) => {
+    installLayoutOverride(webCtx)
+  })
 }

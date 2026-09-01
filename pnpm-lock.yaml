@@ -38,6 +38,9 @@ importers:
       '@deepseek-ai/dsh-client-ui-slots':
         specifier: 0.1.1-rc.2
         version: 0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1))
+      '@deepseek-ai/dsh-client-ui-theme':
+        specifier: 0.1.1-rc.2
+        version: 0.1.1-rc.2(7419db04f338b2b951d1c80ea12b9f97)
       '@deepseek-ai/dsh-home-paths':
         specifier: 0.1.1-rc.2
         version: 0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1))

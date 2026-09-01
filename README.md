@@ -56,6 +56,15 @@ One package, three mounted surfaces:
 | `exports "./agent-tool"` | preset composition row | `prime_agent` tool + prompt section + skill |
 | `exports "./client"` (`dsh.client`) | browser roster (scanned from mounted entries) | fleet column + settings section |
 
+### The layout override
+
+The fleet column needs a fourth shell column (the `prime` slot, live across session switches), which stock dsh layouts do not ship. The package carries `lib/layout-override.js` — the **stock** ui-layout bundle (0.1.1-rc.2 sources) plus the prime-column patch — and installs it at boot through two host-side pieces:
+
+- an exact route `/prime/layout-override.js` serving the artifact;
+- an index tap rewriting the boot manifest entry for `@deepseek-ai/dsh-client-ui-layout` to that URL.
+
+The browser module system registers one factory per module id (a second registration throws), so redirecting the entry URL — never a second registration — is the supported way to replace one browser plugin's implementation. No file inside the dsh installation is touched; uninstalling the package restores the stock three-column shell on the next page load. A future dsh that ships its own `prime` slot keeps working: the rewrite only swaps entries whose URL still points at `/plugins/...`.
+
 ## Development
 
 ```sh

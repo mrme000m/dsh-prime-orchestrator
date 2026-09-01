@@ -57,6 +57,15 @@ dsh 家族包以精确版本链声明为 peer 依赖，运行时从正在运行�
 | `exports "./agent-tool"` | 预设组合行 | `prime_agent` 工具 + 提示段 + 技能 |
 | `exports "./client"`（`dsh.client`） | 浏览器插件表（从已挂载行扫描） | 舰队侧栏 + 设置分区 |
 
+### 布局覆盖
+
+舰队侧栏需要第四个外壳栏（`prime` 槽位，跨会话切换保活），官方 dsh 的布局并不包含。本包携带 `lib/layout-override.js` —— **官方** ui-layout（0.1.1-rc.2 源码）加 prime 栏补丁的构建 —— 并在启动时通过两个宿主侧机制安装：
+
+- 精确路由 `/prime/layout-override.js` 提供该产物；
+- 一次 index tap 把启动清单中 `@deepseek-ai/dsh-client-ui-layout` 条目的 URL 改写为该地址。
+
+浏览器模块系统每个模块 id 只允许注册一个工厂（重复注册会抛错），因此改写条目 URL —— 而非二次注册 —— 是替换某个浏览器插件实现的受支持方式。dsh 安装内的文件不会被改动；卸载本包后，下次刷新即恢复官方三栏外壳。未来 dsh 若自带 `prime` 槽位也不受影响：改写只针对 URL 仍指向 `/plugins/...` 的条目。
+
 ## 开发
 
 ```sh

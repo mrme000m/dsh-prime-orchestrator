@@ -5,7 +5,7 @@ Prime Agent orchestration for [DeepSeek Harness](https://github.com/deepseek-ai/
 It turns a dsh agent into an orchestrator over [Prime Agent](https://pypi.org/project/prime-agent/) (the `prime-agent` CLI) sessions:
 
 - **Host engine** (`ctx.prime`): the shared delegation table, one-shot CLI runs, the protocol-7 daemon socket client, the `/prime` JSON API, and the `prime-orchestrator` settings namespace.
-- **Model-facing surface**: the `prime_agent` tool (delegate, monitor, steer, coordinate, heartbeat, and manage prime-agent sessions), the `prime-orchestrator:workflow` prompt section, and the bundled `prime-agent` skill.
+- **Model-facing surface**: the `prime_agent` tool (delegate, monitor, steer, coordinate, set and manage persistent goals, heartbeats, prompt running sessions, inspect recursive subagents, and manage prime-agent sessions), the `prime-orchestrator:workflow` prompt section, and the bundled `prime-agent` skill.
 - **Web UI**: the Prime fleet column (right side of the Web GUI, toggle at the sidebar foot) with live delegation/session/event streams, and the Settings → Prime Orchestration section.
 - **Agent preset**: `prime-orchestrator` — the full coding agent plus the orchestration surface, derived from `standard`. Sessions can pick it from the preset picker.
 

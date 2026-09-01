@@ -31,6 +31,7 @@ export const name = 'dsh-prime-orchestrator'
 export const Config = PrimeOrchestration.Config
 
 export { PrimeOrchestration } from './engine.ts'
+export { promptDaemonSession, rlmChildView, resolvePrimeConfig, daemonRequest, inspectSession } from './engine.ts'
 export type { Config as PrimeRowConfig } from './engine.ts'
 export type {
   PrimeAction, PrimeConfig, PrimeDelegateRequest, PrimeDelegation, PrimeGeneration,

@@ -869,6 +869,60 @@ export function defaultDaemonSocket(): string {
  * @param timeoutMs - hard timeout; expiry rejects.
  * @returns the success payload under `data`, or the error text under `output`.
  */
+/**
+ * Deliver one prompt to a running daemon session through the daemon `prompt`
+ * command, with the queue/steer/follow-up delivery the orchestration loop needs.
+ * Session slash commands (`/goal`, `/autonomous`, `/refine`, ...) are parsed by
+ * the session, so they work through this route. A session left with suspended
+ * input admission (for example after an aborted update restart) gets one
+ * `resume_queue` attempt before the prompt is retried.
+ * @param config - the resolved plugin config (binary + socket override).
+ * @param agent - the target's daemon active session id.
+ * @param message - the prompt text, or a session slash command like `/goal pause`.
+ * @param delivery - how to deliver while the session is busy: `steer` interrupts
+ * the current turn, `follow_up` queues after it, and the default queues without
+ * steering (starts immediately when the session is idle).
+ * @returns the daemon's admission receipt.
+ */
+export async function promptDaemonSession(config: PrimeConfig, agent: string, message: string, delivery?: 'steer' | 'follow_up'): Promise<{ delivered: boolean; receipt: unknown }> {
+  const command: Record<string, unknown> = {
+    type: 'prompt',
+    activeSessionId: agent,
+    message,
+    ...(delivery === 'steer' ? { streamingBehavior: 'steer' } : {}),
+    ...(delivery === 'follow_up' ? { streamingBehavior: 'followUp' } : {}),
+    ...(delivery === undefined ? { queueIfBusy: true } : {}),
+  }
+  let result = await daemonRequest(config, command, 60000)
+  if (!result.ok && /suspended/i.test(result.output)) {
+    const resumed = await daemonRequest(config, { type: 'resume_queue', activeSessionId: agent }, 15000)
+    if (!resumed.ok) throw new Error(`prime_agent prompt: ${result.output} (resume_queue also failed: ${resumed.output})`)
+    result = await daemonRequest(config, command, 60000)
+  }
+  if (!result.ok) throw new Error(`prime_agent prompt: ${result.output}`)
+  const data = isRecord(result.data) ? result.data : {}
+  return { delivered: true, receipt: result.data, disposition: typeof data.status === 'string' ? data.status : undefined }
+}
+
+/** Project one `get_rlm_children` snapshot into a stable, model-friendly row. */
+export function rlmChildView(child: unknown): Record<string, unknown> {
+  const c = asRecord(child)
+  return {
+    id: typeof c.id === 'string' ? c.id : undefined,
+    sessionName: typeof c.sessionName === 'string' ? c.sessionName : undefined,
+    label: typeof c.label === 'string' ? c.label : undefined,
+    status: typeof c.status === 'string' ? c.status : undefined,
+    model: typeof c.model === 'string' ? c.model : undefined,
+    tokens: typeof c.tokenCount === 'number' ? c.tokenCount : undefined,
+    toolUses: typeof c.toolUseCount === 'number' ? c.toolUseCount : undefined,
+    durationMs: typeof c.durationMs === 'number' ? c.durationMs : undefined,
+    replied: c.repliedSinceTask === true,
+    answerPreview: typeof c.answerPreview === 'string' ? c.answerPreview.slice(0, 400) : undefined,
+    sessionDir: typeof c.sessionDir === 'string' ? c.sessionDir : undefined,
+    ...(typeof c.error === 'string' && c.error.length > 0 ? { error: c.error } : {}),
+  }
+}
+
 export function daemonRequest(config: PrimeConfig, command: Record<string, unknown>, timeoutMs: number): Promise<DaemonResult> {
   return new Promise((resolve) => {
     const socketPath = config.daemonSocket ?? defaultDaemonSocket()
@@ -1549,6 +1603,63 @@ export class PrimeOrchestration extends Service {
         if (!result.ok) throw new Error(`prime_agent wait_for_idle: ${result.output}`)
         return { action: 'wait_for_idle', ok: true, agent: args.agent, idle: true }
       }
+      case 'prompt': {
+        if (typeof args.agent !== 'string' || args.agent.length === 0) {
+          throw new Error('prime_agent prompt: "agent" (daemon active session id) is required')
+        }
+        if (typeof args.message !== 'string' || args.message.trim().length === 0) {
+          throw new Error('prime_agent prompt: "message" is required')
+        }
+        return { action: 'prompt', agent: args.agent, ...(await promptDaemonSession(this.config, args.agent, args.message, args.delivery)) }
+      }
+      case 'goal_set': {
+        if (typeof args.agent !== 'string' || args.agent.length === 0) {
+          throw new Error('prime_agent goal_set: "agent" (daemon active session id) is required')
+        }
+        if (typeof args.goal !== 'string' || args.goal.trim().length === 0) {
+          throw new Error('prime_agent goal_set: "goal" (the persistent objective) is required')
+        }
+        if (args.tokenBudget !== undefined && (typeof args.tokenBudget !== 'number' || !Number.isFinite(args.tokenBudget) || args.tokenBudget <= 0)) {
+          throw new Error('prime_agent goal_set: "tokenBudget" must be a positive integer')
+        }
+        const budget = typeof args.tokenBudget === 'number' ? Math.floor(args.tokenBudget) : undefined
+        const text = budget !== undefined ? `/goal --budget ${budget} ${args.goal}` : `/goal ${args.goal}`
+        const delivered = await promptDaemonSession(this.config, args.agent, text, 'follow_up')
+        return { action: 'goal_set', ok: true, agent: args.agent, goal: args.goal, ...(budget !== undefined ? { tokenBudget: budget } : {}), ...delivered }
+      }
+      case 'goal_action': {
+        const op = args.goalControlAction
+        if (typeof args.agent !== 'string' || args.agent.length === 0) {
+          throw new Error('prime_agent goal_action: "agent" (daemon active session id) is required')
+        }
+        if (typeof op !== 'string' || !['pause', 'resume', 'clear', 'stop', 'status'].includes(op)) {
+          throw new Error('prime_agent goal_action: "goalControlAction" must be pause, resume, clear, stop, or status')
+        }
+        const delivered = await promptDaemonSession(this.config, args.agent, `/goal ${op}`, 'follow_up')
+        return { action: 'goal_action', ok: true, agent: args.agent, op, ...delivered }
+      }
+      case 'children': {
+        if (typeof args.agent !== 'string' || args.agent.length === 0) {
+          throw new Error('prime_agent children: "agent" (daemon active session id) is required')
+        }
+        const result = await daemonRequest(this.config, { type: 'get_rlm_children', activeSessionId: args.agent }, 15000)
+        if (!result.ok) throw new Error(`prime_agent children: ${result.output}`)
+        const raw = isRecord(result.data) && Array.isArray(result.data.children) ? result.data.children : []
+        return {
+          action: 'children',
+          agent: args.agent,
+          count: raw.length,
+          children: raw.map(rlmChildView),
+        }
+      }
+      case 'abort': {
+        if (typeof args.agent !== 'string' || args.agent.length === 0) {
+          throw new Error('prime_agent abort: "agent" (daemon active session id) is required')
+        }
+        const result = await daemonRequest(this.config, { type: 'abort', activeSessionId: args.agent }, 30000)
+        if (!result.ok) throw new Error(`prime_agent abort: ${result.output}`)
+        return { action: 'abort', ok: true, agent: args.agent, result: result.data }
+      }
       case 'saved_sessions': {
         const scope = args.scope === 'all' ? 'all' : 'current'
         const command: Record<string, unknown> = {
@@ -1562,7 +1673,7 @@ export class PrimeOrchestration extends Service {
         return { action: 'saved_sessions', scope, count: sessions.length, savedSessions: sessions.map(savedSessionView) }
       }
       default:
-        throw new Error(`prime_agent: unknown action "${String(action)}" (delegate|status|events|sessions|send|send_message|agents|stop|doctor|goal|session|heartbeats|heartbeat_get|heartbeat_set|heartbeat_action|agent_messages|refine|rename|compact|wait_for_idle|saved_sessions|shutdown)`)
+        throw new Error(`prime_agent: unknown action "${String(action)}" (delegate|status|events|sessions|send|send_message|agents|stop|doctor|goal|session|heartbeats|heartbeat_get|heartbeat_set|heartbeat_action|agent_messages|refine|rename|compact|wait_for_idle|saved_sessions|shutdown|prompt|goal_set|goal_action|children|abort)`)
     }
   }
 

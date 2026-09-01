@@ -19,7 +19,7 @@ dsh plugin --profile web add dsh-prime-orchestrator
 
 # from a git checkout (pnpm ≥10 builds it via the prepare script after you
 # allowlist the build once — the failed install prints the exact remedy)
-dsh plugin --profile web add github:<owner>/dsh-prime-orchestrator
+dsh plugin --profile web add github:mrme000m/dsh-prime-orchestrator
 # if pnpm blocks the build: add to <profile>/pnpm-workspace.yaml, then re-run:
 #   allowBuilds:
 #     dsh-prime-orchestrator: true

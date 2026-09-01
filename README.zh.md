@@ -20,7 +20,7 @@
 dsh plugin --profile web add dsh-prime-orchestrator
 
 # git 检出（pnpm ≥10 需先放行一次构建——失败的安装会打印确切补救方式）
-dsh plugin --profile web add github:<owner>/dsh-prime-orchestrator
+dsh plugin --profile web add github:mrme000m/dsh-prime-orchestrator
 # 若 pnpm 阻止了构建：在 <profile>/pnpm-workspace.yaml 里加入后重试：
 #   allowBuilds:
 #     dsh-prime-orchestrator: true

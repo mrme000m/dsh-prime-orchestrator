@@ -127,7 +127,7 @@ export function installLayoutOverride(ctx: Context): void {
 /** This package's own version (the tap's cache-busting rev), or '0' when unreadable. */
 function packageVersion(): string {
   try {
-    const manifest = JSON.parse(readFileSync(join(dirname(artifact), 'package.json'), 'utf8')) as { version?: unknown }
+    const manifest = JSON.parse(readFileSync(join(dirname(artifact), '..', 'package.json'), 'utf8')) as { version?: unknown }
     return typeof manifest.version === 'string' && manifest.version.length > 0 ? manifest.version : '0'
   } catch {
     return '0'

@@ -1,6 +1,17 @@
 # A2/A3 — Daemon-backed delegations + heartbeats (design)
 
-**Status:** design (not implemented) · **Repo:** `dsh-prime-orchestrator` · **Date:** 2026-09-02
+**Status:** implemented (A2 minimal slice + A3 heartbeats + idle-tracking) · **Repo:** `dsh-prime-orchestrator` · **Date:** 2026-09-02
+
+> **Implemented:** `PrimeDelegateRequest.daemonBacked` (types + tool schema), a pure
+> `buildDaemonCreateConfig(id, input)` helper, and a `startDaemonBackedDelegation` branch in
+> `startDelegation` that sends `create` (resident) → captures `activeSessionId` → `prompt`.
+> **A3:** `heartbeatSchedule`/`heartbeatMessage`/`heartbeatDelivery` issue a `heartbeat_set`
+> right after create (best-effort). **A2 tracking:** `trackDaemonDelegation` polls
+> `wait_for_idle` (60s increments, up to the autonomous timeout / 30m default), then fetches
+> `get_last_assistant_text` and finalizes the record (`exited`, `sawAgentEnd`, `endedAt`,
+> `lastText`). The subprocess path remains the default. **Still deferred:** attach-based live
+> streaming (vs polling), precise success-vs-failure distinction (idle ≈ completed), and the
+> subprocess fallback on daemon failure (opt-in flag fails loud instead).
 
 ## Problem (F2/F3)
 

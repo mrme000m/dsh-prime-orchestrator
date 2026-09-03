@@ -74,6 +74,9 @@ interface PrimeAgentArgs {
   appendSystemPrompt?: string[]
   offline?: boolean
   daemonBacked?: boolean
+  heartbeatSchedule?: string
+  heartbeatMessage?: string
+  heartbeatDelivery?: 'steer' | 'follow_up'
   autonomous?: boolean
   autonomousGates?: string[]
   autonomousMaxTurns?: number
@@ -239,6 +242,9 @@ export function apply(ctx: Context, config: Config): void {
       task: { type: 'string', description: 'delegate: the self-contained task for the new prime-agent session.' },
       briefing: { type: 'string', description: 'delegate: optional pre-digested context injected into the worker so it verifies instead of re-exploring.' },
       daemonBacked: { type: 'boolean', description: 'delegate: create a daemon-backed (resident) session so it is steerable/heartbeatable; the subprocess path is used otherwise.' },
+      heartbeatSchedule: { type: 'string', description: 'delegate: with daemonBacked, set a recurring heartbeat ("every 5m" or a cron expression).' },
+      heartbeatMessage: { type: 'string', description: 'delegate: the heartbeat checkpoint prompt.' },
+      heartbeatDelivery: { type: 'string', enum: ['steer', 'follow_up'], description: 'delegate: heartbeat delivery while busy — steer interrupts, follow_up queues.' },
       cwd: { type: 'string', description: 'delegate/CLI actions: working directory. Defaults to the session workspace.' },
       id: { type: 'string', description: 'Any action that takes an id accepts ANY form: delegation id (e.g. b46e17ec), daemon active session id (e.g. 2cda24a8d2a9), full session id (e.g. 01a05f8c-9b36-72bc-9177-01e1c57f40dc), or session name — the engine resolves it automatically.' },
       message: { type: 'string', description: 'send/send_message/heartbeat_set: the steering or checkpoint message text.' },

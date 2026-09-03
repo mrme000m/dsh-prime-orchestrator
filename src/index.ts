@@ -35,7 +35,7 @@ export {
   promptDaemonSession, rlmChildView, modelView, messageView,
   resolvePrimeConfig, daemonRequest, inspectSession,
   resolveSessionIdentity, readSessionFileEvents, resolveSessionFileIn,
-  heartbeatView, delegationView, buildDelegateArgv, buildDaemonCreateConfig,
+  heartbeatView, delegationView, buildDelegateArgv, buildDaemonCreateConfig, classifyToolCode,
 } from './engine.ts'
 export type { Config as PrimeRowConfig } from './engine.ts'
 export type {

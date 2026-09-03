@@ -105,6 +105,8 @@ interface DelegationRecord extends Omit<PrimeDelegation, 'completed'> {
   sawAgentEnd: boolean
   child: SpawnedChild | null
   _lineBuffer: string
+  _turnHasWrite: boolean
+  _consecutiveReadOnly: number
 }
 
 /** One projected event summary. */
@@ -396,6 +398,39 @@ export function buildDelegateArgv(task: string, input: Omit<PrimeDelegateRequest
 }
 
 /** Fold one stdout chunk into the delegation record's last-event fields. */
+/** Turn threshold: N consecutive read-only turns without a mutation trips the warning. */
+const EXPLORATION_READ_TURN_LIMIT = 8
+
+/** Mutation indicators for a worker tool call's `args.code` (Python or bash). */
+const WRITE_CODE_PATTERNS: RegExp[] = [
+  /\.write_text\s*\(/,
+  /open\s*\([^)]*['"][wax][b+]?['"]/,
+  /\b(?:edit|write|append)\s*\(/,
+  /\bsed\s+-i/,
+  /\btee\s+/,
+  /\bmv\s+\S/,
+  /\brm\s+(?:-r?f?\s+)?\S/,
+  /\bcp\s+(?:-r\s+)?\S/,
+  /\bmkdir\b/,
+  /\btouch\s+\S/,
+  /\bgit\s+(?:add|commit|checkout|stash|reset|merge|rebase|push|apply)\b/,
+  /\bnpm\s+(?:i|install|run\s+build|run\s+pack|publish)\b/,
+  /\bpnpm\s+(?:i|install|build|pack)\b/,
+  /\byarn\b/,
+  /\btsdown\b|\btsc\b|\bgo\s+build\b|\bmake\b/,
+  /\b(?:os\.remove|os\.rename|os\.makedirs|shutil\.(?:move|copy|copy2|rmtree))\s*\(/,
+  /\bcurl\s+-X\s*(?:POST|PUT|PATCH|DELETE)\b/,
+]
+
+/** Classify a worker tool call's code as a mutation ('write') or read-only ('read'). */
+export function classifyToolCode(code: string): 'write' | 'read' {
+  if (typeof code !== 'string' || code.length === 0) return 'read'
+  for (const pattern of WRITE_CODE_PATTERNS) {
+    if (pattern.test(code)) return 'write'
+  }
+  return 'read'
+}
+
 function ingestChunk(record: DelegationRecord, chunk: Buffer): void {
   record._lineBuffer = (record._lineBuffer ?? '') + chunk.toString('utf8')
   const lines = record._lineBuffer.split('\n')
@@ -413,6 +448,21 @@ function ingestChunk(record: DelegationRecord, chunk: Buffer): void {
     const data = asRecord(event)
     if (typeof data.type !== 'string') continue
     record.lastEventType = data.type
+    if (data.type === 'turn_start') record._turnHasWrite = false
+    if (data.type === 'tool_execution_start') {
+      const code = str(asRecord(data.args).code)
+      if (code !== undefined && classifyToolCode(code) === 'write') record._turnHasWrite = true
+    }
+    if (data.type === 'turn_end') {
+      if (record._turnHasWrite) {
+        record.writeTurns += 1
+        record._consecutiveReadOnly = 0
+      } else {
+        record.readTurns += 1
+        record._consecutiveReadOnly += 1
+        if (record._consecutiveReadOnly >= EXPLORATION_READ_TURN_LIMIT) record.explorationWarning = true
+      }
+    }
     if (data.type === 'agent_end') record.sawAgentEnd = true
     if (data.type === 'session' && typeof data.id === 'string' && data.id.length > 0) {
       record.sessionId = data.id
@@ -470,7 +520,7 @@ async function startDaemonBackedDelegation(service: PrimeOrchestration, record: 
   const data = create.data as Record<string, unknown>
   const session = asRecord(data.session)
   const sid = str(data.activeSessionId) ?? str(data.id) ?? str(session.activeSessionId) ?? str(session.id)
-  if (sid === null) {
+  if (sid === undefined) {
     record.status = 'failed'
     record.endedAt = new Date().toISOString()
     record.error = 'daemon create returned no active session id'
@@ -483,6 +533,42 @@ async function startDaemonBackedDelegation(service: PrimeOrchestration, record: 
     record.status = 'failed'
     record.endedAt = new Date().toISOString()
     record.error = `daemon prompt failed: ${prompt.output}`
+    return
+  }
+  const schedule = str(input.heartbeatSchedule)
+  if (schedule !== undefined) {
+    await daemonRequest(config, {
+      type: 'heartbeat_set',
+      activeSessionId: sid,
+      schedule,
+      prompt: str(input.heartbeatMessage) ?? 'Heartbeat checkpoint',
+      ...(input.heartbeatDelivery !== undefined ? { deliveryMode: input.heartbeatDelivery } : {}),
+    }, 10000)
+  }
+  await trackDaemonDelegation(service, record, sid, input)
+}
+
+/** Poll a daemon-backed delegation until idle, then finalize its record. */
+async function trackDaemonDelegation(service: PrimeOrchestration, record: DelegationRecord, sid: string, input: PrimeDelegateRequest & { cwd: string }): Promise<void> {
+  const config = service.config
+  const deadline = Date.now() + (int(input.autonomousTimeoutMs) ?? 1800000)
+  let reachedIdle = false
+  while (Date.now() < deadline) {
+    const idle = await daemonRequest(config, { type: 'wait_for_idle', activeSessionId: sid }, 60000)
+    if (idle.ok) { reachedIdle = true; break }
+    if (!/timed out|timeout/i.test(idle.output ?? '')) {
+      record.status = 'failed'
+      record.endedAt = new Date().toISOString()
+      record.error = `daemon wait_for_idle failed: ${idle.output}`
+      return
+    }
+  }
+  const last = await daemonRequest(config, { type: 'get_last_assistant_text', activeSessionId: sid }, 15000)
+  if (last.ok && isRecord(last.data)) record.lastText = str(last.data.text) ?? null
+  if (reachedIdle) {
+    record.sawAgentEnd = true
+    record.status = 'exited'
+    record.endedAt = new Date().toISOString()
   }
 }
 
@@ -510,9 +596,14 @@ function startDelegation(service: PrimeOrchestration, input: PrimeDelegateReques
     lastEventType: null,
     lastText: null,
     sawAgentEnd: false,
+    readTurns: 0,
+    writeTurns: 0,
+    explorationWarning: false,
     error: null,
     child: null,
     _lineBuffer: '',
+    _turnHasWrite: false,
+    _consecutiveReadOnly: 0,
   }
   if (input.daemonBacked === true) {
     service.records.set(id, record)
@@ -797,6 +888,9 @@ export function delegationView(record: DelegationRecord): PrimeDelegation {
     lastEventType: record.lastEventType,
     lastText: record.lastText,
     completed: record.sawAgentEnd,
+    readTurns: record.readTurns,
+    writeTurns: record.writeTurns,
+    explorationWarning: record.explorationWarning,
     error: record.error,
     logFile: record.logFile,
   }

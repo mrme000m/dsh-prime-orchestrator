@@ -89,6 +89,8 @@ function DelegationCard(props: {
         {d.lastEventType !== null && t('delegation.lastEvent', { type: d.lastEventType })}
         {d.completed && ` · ${t('delegation.completed')}`}
         {d.exitCode !== null && d.exitCode !== 0 && ` · ${t('delegation.exitCode', { code: d.exitCode })}`}
+        {d.explorationWarning && ` · ${t('delegation.exploring')}`}
+        {d.status === 'running' && (d.readTurns > 0 || d.writeTurns > 0) && ` · ${t('delegation.readWrite', { r: d.readTurns, w: d.writeTurns })}`}
       </div>
       {d.error !== null && <p className={clsx(css.cardMeta, css.cardError)}>{t('delegation.error', { message: d.error })}</p>}
       <div

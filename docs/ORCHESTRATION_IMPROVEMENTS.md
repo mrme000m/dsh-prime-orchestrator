@@ -91,17 +91,25 @@ points, communities, hotspots, and the specific symbols a change touches. The im
 worker consumes the brief instead of reading files. This splits "understand" from "change"
 and lets each phase use the cheapest tool.
 
-**B3. Wire the code-review-graph MCP tools into prime-agent.**
-Add an MCP server config to the prime-agent CLI/session so workers have
-`get_minimal_context_tool` / `query_graph_tool` / `semantic_search_nodes_tool` available
-natively (instead of shelling out to `grep`). Gate on the repo having a built graph;
-fall back to grep only when absent.
+**B3. Wire the code-review-graph MCP tools into prime-agent.** ✅ **done**
+Register the code-review-graph MCP server in prime-agent's `Settings.mcpServers` (stdio:
+`code-review-graph serve`, auto-detected repo), with a comprehension-focused `enabledTools`
+allowlist (`get_minimal_context_tool`, `query_graph_tool`, `semantic_search_nodes_tool`,
+`list_communities_tool`, `detect_changes_tool`, `list_flows_tool`, `get_flow_tool`,
+`traverse_graph_tool`). Workers then call these natively instead of shelling out to `grep`;
+the server builds the graph on demand, so there is no separate "built graph" gate.
+- Implemented: `scripts/register-code-review-graph-mcp.mjs` (idempotent, backs up settings)
+  + registered in `~/.prime/agent/settings.json`.
+- Caveat: `serve` auto-detects the repo from the MCP process cwd; for a single fixed repo,
+  add `--repo <path>` to `args`.
 
-**B4. Exploration budget gating.**
-Add a turn/tool budget that distinguishes exploration (read-only: `read`/`grep`/graph
-queries) from mutation (writes). Emit a `steer`-style warning event when a worker exceeds
-N consecutive read-only turns without a write, so the orchestrator can redirect early
-instead of discovering the stall at timeout. This is the automated fix for F4.
+**B4. Exploration budget gating.** ✅ **done**
+`classifyToolCode(code)` (exported, tested) classifies each tool call's `args.code` as
+mutation (`edit`/`write`/`write_text`/`sed -i`/`mv`/`rm`/`npm run build`/`git add`…) vs
+read-only (default). `ingestChunk` tracks read-only vs mutation turns per delegation and sets
+`explorationWarning` once a worker exceeds **8** consecutive read-only turns without a write;
+`readTurns`/`writeTurns`/`explorationWarning` are exposed on `PrimeDelegation` (host + client).
+This is the automated fix for F4.
 
 **B5. Implementation-first guidance in the delegate prompt template.**
 Default the worker prompt with an explicit "you have the briefing; verify then WRITE CODE
@@ -135,9 +143,10 @@ briefing once and reuses it for every worker in the fan-out.
 model/cwd/first-message, loading skeletons, empty states.) Keep this as the baseline
 UX; it directly supports A4's "canonical id" goal.
 
-**D2. Show exploration-vs-implementation phase in the fleet column.**
-Surface each worker's read-only-vs-write turn count (from B4) as a small indicator on the
-card, so the human sees at a glance whether a worker is exploring or producing.
+**D2. Show exploration-vs-implementation phase in the fleet column.** ✅ **done**
+The delegation card now shows `read {r} · write {w}` while running, plus an `exploring`
+badge when `explorationWarning` is set — so the human sees at a glance whether a worker is
+exploring or producing.
 
 **D3. Report delegation ids uniformly in every action result.**
 Every action response (goal, session, events, stop, heartbeats) should echo the resolved
@@ -154,9 +163,9 @@ knows which namespace it actually resolved to — closing the loop on F1 at the 
 | P0 | A2 daemon-backed delegations | engine | M | F2, F3, A3 |
 | P0 | A4 canonical id per delegation + D3 echo identity | engine+UI | S | F1 |
 | P1 | B1 briefing injection | engine+agent-tool | S | F5, C3 |
-| P1 | B4 exploration budget gating + D2 phase indicator | engine+UI | M | F4, F8 |
+| P1 | B4 exploration budget gating + D2 phase indicator ✅ | engine+UI | S | F4, F8 |
 | P1 | B2 code-explorer sub-agent preset | presets+prompt | M | F7, efficiency |
-| P2 | B3 code-review-graph MCP injection | prime-agent CLI | M | F7 |
+| P2 | B3 code-review-graph MCP injection ✅ | prime-agent settings + script | S | F7 |
 | P2 | A3 heartbeats on delegations | engine | S | F3 |
 | P2 | B5 implementation-first default prompt | preset | S | F4 |
 | P3 | C1/C2/C3 Mnemon comprehension writeback + recall | orchestrator workflow | M | F6 |

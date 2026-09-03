@@ -35,6 +35,12 @@ export interface PrimeDelegation {
   lastEventType: string | null
   lastText: string | null
   completed: boolean
+  /** Read-only exploration turns (no file mutation) seen in the worker log. */
+  readTurns: number
+  /** Turns that mutated files or ran build/install commands. */
+  writeTurns: number
+  /** True once the worker exceeded N consecutive read-only turns without a write (B4). */
+  explorationWarning: boolean
   error: string | null
   logFile: string
 }
@@ -90,6 +96,9 @@ export interface PrimeDelegateRequest {
   skills?: string[]
   appendSystemPrompt?: string[]
   daemonBacked?: boolean
+  heartbeatSchedule?: string
+  heartbeatMessage?: string
+  heartbeatDelivery?: 'steer' | 'follow_up'
   autonomous?: boolean
   autonomousGates?: string[]
   autonomousMaxTurns?: number

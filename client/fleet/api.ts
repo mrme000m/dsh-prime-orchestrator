@@ -14,6 +14,8 @@ export interface PrimeDelegation {
   cwd: string
   /** The underlying prime-agent session id once the log's session header arrived (steering target). */
   sessionId: string | null
+  /** The daemon active session id when the delegation is daemon-backed (else null). */
+  activeSessionId: string | null
   pid: number | null
   status: 'running' | 'exited' | 'failed' | 'stopped'
   startedAt: string
@@ -22,6 +24,9 @@ export interface PrimeDelegation {
   lastEventType: string | null
   lastText: string | null
   completed: boolean
+  readTurns: number
+  writeTurns: number
+  explorationWarning: boolean
   error: string | null
   logFile: string
 }

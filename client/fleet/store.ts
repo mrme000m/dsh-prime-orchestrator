@@ -167,6 +167,77 @@ export function untilOf(iso: string, now: number): { unit: 'soon' | 'minute' | '
 }
 
 /**
+ * Truncate a display string to a maximum length with a single ellipsis.
+ * @param text - the raw text.
+ * @param max - the maximum kept length (the ellipsis replaces the tail).
+ * @returns the truncated text, or the original when it already fits.
+ */
+export function truncate(text: string, max: number): string {
+  if (text.length <= max) return text
+  return `${text.slice(0, max - 1).trimEnd()}…`
+}
+
+/** One haystack to scan for a filter query. */
+type QueryField = string | null | undefined
+
+/**
+ * Case-insensitive substring match over the fields that identify one row.
+ * @param query - the raw filter text; blank matches everything.
+ * @param fields - the candidate fields (null/undefined are skipped).
+ * @returns true when any field contains the query.
+ */
+export function matchesAny(query: string, fields: readonly QueryField[]): boolean {
+  const needle = query.trim().toLowerCase()
+  if (needle.length === 0) return true
+  for (const field of fields) {
+    if (field != null && field.toLowerCase().includes(needle)) return true
+  }
+  return false
+}
+
+/**
+ * Fleet-search predicate for one delegation card: task text, delegation
+ * id, underlying session id, and cwd (full path or basename) all match.
+ * @param delegation - the delegation record.
+ * @param query - the raw filter text.
+ * @returns true when the card should stay visible.
+ */
+export function delegationMatches(delegation: PrimeDelegation, query: string): boolean {
+  if (query.trim().length === 0) return true
+  return matchesAny(query, [
+    delegation.task,
+    delegation.id,
+    delegation.sessionId,
+    delegation.cwd,
+    delegation.cwd !== '' ? baseNameOf(delegation.cwd) : undefined,
+  ])
+}
+
+/**
+ * Fleet-search predicate for one roster agent: first message, agent id,
+ * daemon session id, session-file id, model name/id, and cwd basename all
+ * match.
+ * @param agent - the projected agent view.
+ * @param query - the raw filter text.
+ * @returns true when the row should stay visible.
+ */
+export function agentMatches(agent: PrimeAgent, query: string): boolean {
+  if (query.trim().length === 0) return true
+  const sessionFileId = agent.sessionFile !== null
+    ? baseNameOf(agent.sessionFile).replace(/\.jsonl$/, '')
+    : undefined
+  return matchesAny(query, [
+    agent.firstMessage,
+    agent.id,
+    agent.sessionId,
+    sessionFileId,
+    agent.model,
+    agent.modelId,
+    agent.cwd !== null ? baseNameOf(agent.cwd) : undefined,
+  ])
+}
+
+/**
  * Parse a comma-separated flag list ("gates, checks") into clean strings;
  * blank entries drop. Used by the delegate form's list-valued fields.
  * @param raw - the raw input text.

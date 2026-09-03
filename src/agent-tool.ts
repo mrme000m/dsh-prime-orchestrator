@@ -57,6 +57,7 @@ export const Config: z<Config> = z.object({
 interface PrimeAgentArgs {
   action: PrimeAction
   task?: string
+  briefing?: string
   cwd?: string
   id?: string
   message?: string
@@ -72,6 +73,7 @@ interface PrimeAgentArgs {
   skills?: string[]
   appendSystemPrompt?: string[]
   offline?: boolean
+  daemonBacked?: boolean
   autonomous?: boolean
   autonomousGates?: string[]
   autonomousMaxTurns?: number
@@ -117,10 +119,10 @@ const WORKFLOW_SECTION = `## Prime orchestration workflow
 
 For every non-trivial human request, run this loop:
 
-1. ANALYZE before delegating. Read the relevant files (read, grep, glob) until you can state the intent concretely: what must change, where, and how success is verified.
+1. ANALYZE before delegating. Read the relevant files (read, grep, glob) until you can state the intent concretely: what must change, where, and how success is verified. After analysis, persist a compact comprehension insight (repo, key symbols, id namespaces, gotchas) to Mnemon; recall existing comprehension for the target repo before delegating and fold it into the briefing.
 2. GOAL: call create_goal with the elaborated objective — the human's intent restated as one verifiable completion condition.
-3. DECOMPOSE the goal into independent, verifiable work packages small enough for one prime-agent session each. When the codebase has several independent parts to change, split the work by part (one worker per subsystem or file area) so workers do not edit the same files.
-4. DELEGATE each package with the prime_agent tool (action delegate). Every delegated task must be fully self-contained — prime-agent sessions do NOT see this conversation: include the goal, exact file paths, constraints, and acceptance criteria. Pass a persistent objective with delegate "goal", and bound long-running work with "autonomous" plus its gate/turn/token/timeout flags. Choose the working directory deliberately: prime-agent runs with your user's permissions and is NOT a sandbox, so delegate only into trusted workspaces. Give each worker a distinct scope and tell it which file areas the OTHER workers own, so parallel workers do not collide.
+3. DECOMPOSE the goal into independent, verifiable work packages small enough for one prime-agent session each. For a large unfamiliar repo, first delegate a \`code-explorer\` scout sub-agent to emit a ≤500-token structural brief, then pass that brief as the implementing worker's \`briefing\`. When the codebase has several independent parts to change, split the work by part (one worker per subsystem or file area) so workers do not edit the same files.
+4. DELEGATE each package with the prime_agent tool (action delegate). Every delegated task must be fully self-contained — prime-agent sessions do NOT see this conversation: include the goal, exact file paths, constraints, and acceptance criteria. Pass a persistent objective with delegate "goal", and bound long-running work with "autonomous" plus its gate/turn/token/timeout flags. Choose the working directory deliberately: prime-agent runs with your user's permissions and is NOT a sandbox, so delegate only into trusted workspaces. Give each worker a distinct scope and tell it which file areas the OTHER workers own, so parallel workers do not collide. Workers verify the briefing and then WRITE CODE in their first turns; instruct each worker not to re-read files it was given summaries or line numbers for — redundant exploration is a known anti-pattern.
 5. MANAGE: poll prime_agent action status/events; discover the fleet with action agents (each row's id is its daemon active session id, the address for messaging/heartbeats); surface a running session's goal lifecycle and idle state with action goal/session; check background-service health with action doctor; steer a running prime-agent session with action send or send_message; give new work or run a session command (/goal, /autonomous, /refine, /compact) with action prompt; set, then later pause or clear, a running session's persistent goal with action goal_set/goal_action; inspect a worker's own recursive subagent tree with action children; cancel a runaway TURN with action abort, and a runaway SESSION with action stop; swap a failing worker's model with action set_model (list choices with models), read its transcript with action messages (last: true for the final answer), drop stale queued input with action queue_action, cap or expand its recursion with action rlm_depth, and branch a misdirected worker at an earlier message with action fork_points + fork. Never wait idle: while delegations run, verify finished work or prepare integration yourself.
 6. COORDINATE parallel workers: when several prime agents work on different parts of the code, use action agents to find each worker's id, then action send_message (delivery "steer" to interrupt a busy worker, "follow_up" to queue after its turn) to pass results, warnings, and integration instructions between them. Prime-agent workers can also message each other directly, but the orchestrator owns cross-worker hand-offs and conflict avoidance. Have each worker write results to distinct files and report a short completion summary, then read those files yourself to integrate the parts.
 7. HEARTBEATS: for long-running delegated sessions, set a recurring checkpoint with action heartbeat_set ("schedule" like "every 5m"; "message" is the checkpoint prompt; "delivery" steer interrupts, follow_up queues). Heartbeats are per-session and self-updating: read a session's current heartbeat with action heartbeat_get, and when a session reports progress or a new checkpoint in its replies (via events/session), re-issue heartbeat_set with the updated schedule/message to move the checkpoint forward — heartbeat_set replaces the session's existing heartbeat. Pause/resume/stop a heartbeat with action heartbeat_action, and clear a finished session's heartbeat (heartbeat_action "clear") so it stops prompting. A heartbeat set on a subagent session id is a nested heartbeat, managed by the same routes.
@@ -129,18 +131,18 @@ For every non-trivial human request, run this loop:
 The prime-agent skill documents the CLI, its session JSONL event format, daemon socket control, and pitfalls — load it with the skill tool before non-trivial orchestration. On the harness's web GUI, the Prime fleet column (right side of the window, toggle at the sidebar foot) shows the same delegations, sessions, and service state with live event streams.`
 
 const TOOL_DESCRIPTION = `Delegate, monitor, and manage Prime Agent (prime-agent CLI) sessions. Actions:
-- delegate: start a background prime-agent JSON-mode session running "task" in "cwd"; returns a delegation id. The task must be fully self-contained (goal, file paths, constraints, acceptance criteria) — the session does not see this conversation. Optional capability flags: model, provider, thinking, goal, goalTokenBudget, continue, resume, extensions[], skills[], appendSystemPrompt[], offline, and autonomous with autonomousGates[]/autonomousMaxTurns/autonomousMaxTokens/autonomousTimeoutMs/autonomousGateRetries/autonomousGateTimeoutMs/autonomousMaxContinuations.
+- delegate: start a background prime-agent JSON-mode session running "task" in "cwd"; returns a delegation id. The task must be fully self-contained (goal, file paths, constraints, acceptance criteria) — the session does not see this conversation. Give a \`briefing\` with exact file paths/line numbers and an explicit verify-then-write instruction so the worker does not re-explore. Optional capability flags: briefing, daemonBacked, model, provider, thinking, goal, goalTokenBudget, continue, resume, extensions[], skills[], appendSystemPrompt[], offline, and autonomous with autonomousGates[]/autonomousMaxTurns/autonomousMaxTokens/autonomousTimeoutMs/autonomousGateRetries/autonomousGateTimeoutMs/autonomousMaxContinuations.
 - agents: structured roster of daemon-managed and saved prime-agent sessions (id = daemon active session id, session id, name, cwd, model, activity, streaming/tools state, rlm depth, parent, heartbeat). Discover which workers are running and address them for coordination; "all": true adds saved (draft) sessions.
 - status: prime-agent daemon health plus every delegation started here, with its last event and whether it completed (agent_end seen).
-- events: the trailing JSON events of one delegation "id" (optional "limit", default 20, max 100).
+- events: the trailing JSON events of one delegation or session "id" in any form (delegation id, session id, active session id, or name; optional "limit", default 20, max 100).
 - sessions: prime-agent's own persisted sessions (~/.prime/agent/sessions) with size and last-write time.
-- send: deliver a message to a running session/agent ("id" = name or session/agent id) via the CLI. Slash commands are NOT parsed. "from" names the sender; "delivery" steer/follow_up controls busy-session delivery.
+- send: deliver a message to a running session/agent ("id" = any id form) via the CLI. Slash commands are NOT parsed. "from" names the sender; "delivery" steer/follow_up controls busy-session delivery.
 - send_message: targeted agent-to-agent message over the daemon socket ("target" = agent name or active session id; "from" optional sender; "delivery" steer interrupts a busy session, follow_up queues after the turn); returns a delivery receipt. Use this to coordinate parallel workers.
 - agent_messages: control agent-message delivery. "agentMessagesAction" status reads the inbox safety state (paused + queue/rate limits), pause/resume gate all agent messages daemon-wide, clear drops one session's queued agent messages ("agent" = its daemon active session id).
-- stop: stop one delegation started here ("id" = delegation id), or a prime-agent session by its session/agent id.
+- stop: stop one delegation started here, or any prime-agent session ("id" = any id form: delegation id, active session id, session id, or name).
 - doctor: prime-agent daemon/supervisor health plus daemon status (background-service verification).
-- goal: read-only forensics for a prime-agent session "id" — current thread_goal_state (status/goalId), last goal_context, last slash-command result, last compaction, and idle state, read from ~/.prime/agent/sessions/<id>.jsonl.
-- session: like goal but also returns the trailing summarized events (optional "limit", default 30, max 200) of one prime-agent session "id".
+- goal: read-only forensics for a prime-agent session "id" in any form (active session id, session id, delegation id, or name) — current thread_goal_state (status/goalId), last goal_context, last slash-command result, last compaction, and idle state, read from the session's ~/.prime/agent/sessions/<id>.jsonl.
+- session: like goal but also returns the trailing summarized events (optional "limit", default 30, max 200) of one prime-agent session "id" in any form.
 - heartbeats: list every heartbeat and scheduled prompt on the daemon (status, source heartbeat/rlm_heartbeat/cron, schedule, delivery mode steer/follow_up, next run, run count, prompt).
 - heartbeat_get: read one session's current persistent heartbeat ("agent" = daemon active session id) — its schedule, prompt, delivery mode, and run count — so you can see the current checkpoint before re-setting it.
 - heartbeat_set: set a persistent heartbeat on a session ("agent" = daemon active session id; "schedule" like "every 5m" or a cron expression; "message" = the recurring prompt; "delivery" steer interrupts a busy session, follow_up queues after the turn; "source" cron makes a plain scheduled prompt). Re-issuing heartbeat_set on a session REPLACES its existing heartbeat — this is how you self-update a heartbeat to a new checkpoint. Heartbeats are per-session: setting one on a subagent session creates a nested heartbeat.
@@ -172,6 +174,11 @@ const TOOL_DESCRIPTION = `Delegate, monitor, and manage Prime Agent (prime-agent
 const SKILL_DESCRIPTION = `Drive the prime-agent CLI (PrimeIntellect's self-improving RLM harness) from this agent: print/JSON/RPC modes, daemon-backed sessions, goals, heartbeats, and agent-to-agent messaging. Prefer the prime_agent tool for delegation, coordination, and heartbeat management; use this skill for daemon control and session forensics.`
 
 const SKILL_WHEN_TO_USE = `When delegating to, steering, coordinating, or inspecting prime-agent sessions beyond what the prime_agent tool covers — daemon socket control, session JSONL parsing, goals, self-updating heartbeats, multi-agent messaging.`
+
+/** Skill catalog description and routing guidance for the code-explorer scout. */
+const SCOUT_SKILL_DESCRIPTION = `A read-only code-comprehension sub-agent that produces a token-capped structural brief via code-review-graph.`
+
+const SCOUT_SKILL_WHEN_TO_USE = `Delegate first when entering a large unfamiliar repo so an implementing worker receives a briefing instead of re-exploring.`
 
 /** Render one canonical JSON value as bounded pretty text for the model. */
 function renderJson(_args: unknown, value: unknown): ContentBlock[] {
@@ -206,6 +213,19 @@ export function apply(ctx: Context, config: Config): void {
     source: 'bundled',
   })
 
+  const scoutPath = fileURLToPath(new URL('../skills/code-explorer/SKILL.md', import.meta.url))
+  const scoutRaw = readFileSync(scoutPath, 'utf8')
+  const scoutContent = scoutRaw.replace(/^---\n[\s\S]*?\n---\n?/, '')
+  ctx.skills.register({
+    name: 'code-explorer',
+    description: SCOUT_SKILL_DESCRIPTION,
+    whenToUse: SCOUT_SKILL_WHEN_TO_USE,
+    content: scoutContent,
+    path: scoutPath,
+    resourceBase: { kind: 'directory', path: fileURLToPath(new URL('../skills/code-explorer/', import.meta.url)) },
+    source: 'bundled',
+  })
+
   ctx.tools.register(defineTool({
     name: toolName,
     description: TOOL_DESCRIPTION,
@@ -217,8 +237,10 @@ export function apply(ctx: Context, config: Config): void {
         description: 'The operation to perform.',
       },
       task: { type: 'string', description: 'delegate: the self-contained task for the new prime-agent session.' },
+      briefing: { type: 'string', description: 'delegate: optional pre-digested context injected into the worker so it verifies instead of re-exploring.' },
+      daemonBacked: { type: 'boolean', description: 'delegate: create a daemon-backed (resident) session so it is steerable/heartbeatable; the subprocess path is used otherwise.' },
       cwd: { type: 'string', description: 'delegate/CLI actions: working directory. Defaults to the session workspace.' },
-      id: { type: 'string', description: 'events/stop: delegation id; send/stop/goal/session: prime-agent session or agent id.' },
+      id: { type: 'string', description: 'Any action that takes an id accepts ANY form: delegation id (e.g. b46e17ec), daemon active session id (e.g. 2cda24a8d2a9), full session id (e.g. 01a05f8c-9b36-72bc-9177-01e1c57f40dc), or session name — the engine resolves it automatically.' },
       message: { type: 'string', description: 'send/send_message/heartbeat_set: the steering or checkpoint message text.' },
       limit: { type: 'integer', description: 'events/session: maximum trailing events to return (events default 20/max 100, session default 30/max 200).' },
       model: { type: 'string', description: 'delegate: prime-agent --model override.' },
@@ -254,7 +276,7 @@ export function apply(ctx: Context, config: Config): void {
       schedule: { type: 'string', description: 'heartbeat_set: schedule expression ("every 5m", "0 9 * * 1-5", "in 30m", "at <ISO date>").' },
       delivery: { type: 'string', enum: ['steer', 'follow_up'], description: 'heartbeat_set/send/send_message: delivery while the session is busy — steer interrupts the turn, follow_up queues after it (default steer).' },
       source: { type: 'string', enum: ['heartbeat', 'cron'], description: 'heartbeat_set: heartbeat (persistent recurring prompt) or cron (plain scheduled prompt) (default heartbeat).' },
-      agent: { type: 'string', description: 'daemon active session id of the target session (nested subagent sessions have their own ids). Used by prompt, goal_set, goal_action, children, abort, heartbeats, refine, rename, compact, wait_for_idle, agent_messages, send_message resolution.' },
+      agent: { type: 'string', description: 'The target session, in ANY resolvable form — daemon active session id, full session id (or unique prefix), delegation id, or session name (nested subagent sessions have their own ids); the engine resolves it to the daemon active session id automatically. Used by prompt, goal_set, goal_action, children, abort, models, set_model, queue, queue_action, messages, child_action, export, fork_points, fork, rlm_depth, refine, rename, compact, wait_for_idle, agent_messages, heartbeat_get/set/action.' },
       jobId: { type: 'string', description: 'heartbeat_action: the heartbeat/cron job id from action heartbeats.' },
       heartbeatAction: { type: 'string', enum: ['pause', 'resume', 'stop', 'cancel', 'clear'], description: 'heartbeat_action: the management operation.' },
       target: { type: 'string', description: 'send_message: target agent name, short agent id, or session id.' },

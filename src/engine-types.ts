@@ -6,4 +6,4 @@
  * @module dsh-prime-orchestrator/engine-types
  */
 
-export type { PrimeAction, PrimeDelegateRequest } from './types.ts'
+export type { PrimeAction, PrimeDelegateRequest, ResolvedIdentity } from './types.ts'

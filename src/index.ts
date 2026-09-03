@@ -34,11 +34,16 @@ export { PrimeOrchestration } from './engine.ts'
 export {
   promptDaemonSession, rlmChildView, modelView, messageView,
   resolvePrimeConfig, daemonRequest, inspectSession,
+  resolveSessionIdentity, readSessionFileEvents, resolveSessionFileIn,
+  heartbeatView, delegationView, buildDelegateArgv, buildDaemonCreateConfig,
 } from './engine.ts'
 export type { Config as PrimeRowConfig } from './engine.ts'
 export type {
+  ResolveIdentityOptions,
+} from './engine.ts'
+export type {
   PrimeAction, PrimeConfig, PrimeDelegateRequest, PrimeDelegation, PrimeGeneration,
-  PrimeGenerationStep, PrimeSessionFile, PrimeState, PrimeStopResult,
+  PrimeGenerationStep, PrimeSessionFile, PrimeState, PrimeStopResult, ResolvedIdentity,
 } from './types.ts'
 
 /**

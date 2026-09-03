@@ -98,7 +98,13 @@ function CLIENT_PURITY_PLUGIN() {
 
 export default defineConfig([
   {
-    entry: { index: 'src/index.ts', 'agent-tool': 'src/agent-tool.ts' },
+    entry: {
+      index: 'src/index.ts',
+      'agent-tool': 'src/agent-tool.ts',
+      'cf-tools': 'src/cf-tools.ts',
+      'bw-tools': 'src/bw-tools.ts',
+      'llm-cf-provider': 'src/llm-cf-provider.ts',
+    },
     outDir: 'lib',
     format: ['esm'],
     platform: 'node',

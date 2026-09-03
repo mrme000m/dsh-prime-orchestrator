@@ -35,3 +35,14 @@
 - insert:
     - id: prime-orchestration
       name: 'dsh-prime-orchestrator'
+    # Host-plane LLM adapter: registers a Cloudflare Workers AI
+    # chat-completions adapter on the host `llm` service under the
+    # `cf-workers-ai-native` provider route (OpenAI-compatible endpoint,
+    # fetch + SSE, harness StreamChunk protocol) so the harness can call
+    # Workers AI without the pi-ai SDK layer.
+    - id: llm-cf-provider
+      name: 'dsh-prime-orchestrator/llm-cf-provider'
+    # Read-only Bitwarden CLI wrappers: bw_status, bw_list, bw_get.
+    # Resolves the BW_SESSION credential through the host credential seam.
+    - id: bw-tools
+      name: 'dsh-prime-orchestrator/bw-tools'

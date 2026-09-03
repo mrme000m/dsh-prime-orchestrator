@@ -20,7 +20,7 @@ import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, st
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createConnection } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
@@ -39,6 +39,7 @@ import type {
   PrimeSessionFile,
   PrimeState,
   PrimeStopResult,
+  ResolvedIdentity,
 } from './types.ts'
 
 export type {
@@ -51,6 +52,7 @@ export type {
   PrimeSessionFile,
   PrimeState,
   PrimeStopResult,
+  ResolvedIdentity,
 } from './types.ts'
 
 /** One `spawn` child with stdin ignored and piped stdout/stderr. */
@@ -130,7 +132,7 @@ interface EventSummary {
 }
 
 /** Projected daemon agent roster row. */
-interface AgentView {
+export interface AgentView {
   id: string | null
   sessionId: string | null
   sessionFile: string | null
@@ -217,7 +219,7 @@ type DaemonResult =
   | { ok: false; output: string }
 
 /** Roster result: either the CLI failure or the projected agents. */
-type ListAgentsResult =
+export type ListAgentsResult =
   | { ok: false; output: string }
   | { ok: true; agents: AgentView[] }
 
@@ -385,7 +387,11 @@ export function buildDelegateArgv(task: string, input: Omit<PrimeDelegateRequest
     const maxContinuations = int(input.autonomousMaxContinuations)
     if (maxContinuations !== undefined) argv.push('--autonomous-max-continuations', String(maxContinuations))
   }
-  argv.push(task)
+  const briefing = str(input.briefing)
+  const effectiveTask = briefing
+    ? '[BRIEFING — verify, do not re-explore]\n' + briefing + '\n\n---\n\n' + task
+    : task
+  argv.push(effectiveTask)
   return argv
 }
 
@@ -419,6 +425,67 @@ function ingestChunk(record: DelegationRecord, chunk: Buffer): void {
   }
 }
 
+/** Map a delegate request to a daemon `create` command (resident lifecycle). */
+export function buildDaemonCreateConfig(id: string, input: PrimeDelegateRequest & { cwd: string }): Record<string, unknown> {
+  const config: Record<string, unknown> = {}
+  const put = (key: string, value: unknown): void => { if (value !== undefined && value !== null) config[key] = value }
+  put('cwd', input.cwd)
+  put('provider', str(input.provider))
+  put('model', str(input.model))
+  put('thinking', str(input.thinking))
+  const systemPrompt = str(input.briefing)
+    ?? (Array.isArray(input.appendSystemPrompt) ? input.appendSystemPrompt.filter((x): x is string => typeof x === 'string' && x.length > 0).join('\n') || undefined : undefined)
+  put('systemPrompt', systemPrompt)
+  put('goal', str(input.goal))
+  if (input.autonomous === true) {
+    const gates = Array.isArray(input.autonomousGates) ? input.autonomousGates.filter((x): x is string => typeof x === 'string' && x.length > 0) : []
+    config.autonomous = {
+      enabled: true,
+      ...(int(input.autonomousMaxTurns) !== undefined ? { maxTurns: int(input.autonomousMaxTurns) } : {}),
+      ...(int(input.autonomousMaxTokens) !== undefined ? { maxTokens: int(input.autonomousMaxTokens) } : {}),
+      ...(int(input.autonomousTimeoutMs) !== undefined ? { timeoutMs: int(input.autonomousTimeoutMs) } : {}),
+      ...(int(input.autonomousMaxContinuations) !== undefined ? { maxContinuations: int(input.autonomousMaxContinuations) } : {}),
+      ...(gates.length > 0 ? {
+        gates: {
+          commands: gates,
+          ...(int(input.autonomousGateRetries) !== undefined ? { maxRetries: int(input.autonomousGateRetries) } : {}),
+          ...(int(input.autonomousGateTimeoutMs) !== undefined ? { timeoutMs: int(input.autonomousGateTimeoutMs) } : {}),
+        },
+      } : {}),
+    }
+  }
+  return { name: `orchestrator-${id}`, lifecycle: 'resident', config }
+}
+
+/** Create a resident (daemon-backed) session and deliver the task via prompt. */
+async function startDaemonBackedDelegation(service: PrimeOrchestration, record: DelegationRecord, input: PrimeDelegateRequest & { cwd: string }): Promise<void> {
+  const config = service.config
+  const create = await daemonRequest(config, { type: 'create', ...buildDaemonCreateConfig(record.id, input) }, 30000)
+  if (!create.ok || !isRecord(create.data)) {
+    record.status = 'failed'
+    record.endedAt = new Date().toISOString()
+    record.error = `daemon-backed delegation failed: ${create.ok ? 'no session in response' : create.output}`
+    return
+  }
+  const data = create.data as Record<string, unknown>
+  const session = asRecord(data.session)
+  const sid = str(data.activeSessionId) ?? str(data.id) ?? str(session.activeSessionId) ?? str(session.id)
+  if (sid === null) {
+    record.status = 'failed'
+    record.endedAt = new Date().toISOString()
+    record.error = 'daemon create returned no active session id'
+    return
+  }
+  record.activeSessionId = sid
+  if (record.sessionId === null) record.sessionId = str(data.sessionId) ?? sid
+  const prompt = await daemonRequest(config, { type: 'prompt', activeSessionId: sid, message: input.task, queueIfBusy: false }, 30000)
+  if (!prompt.ok) {
+    record.status = 'failed'
+    record.endedAt = new Date().toISOString()
+    record.error = `daemon prompt failed: ${prompt.output}`
+  }
+}
+
 /** Start one background prime-agent session in JSON mode. */
 function startDelegation(service: PrimeOrchestration, input: PrimeDelegateRequest & { cwd: string }): DelegationRecord {
   const config = service.config
@@ -432,6 +499,7 @@ function startDelegation(service: PrimeOrchestration, input: PrimeDelegateReques
     task: input.task,
     cwd: input.cwd,
     sessionId: null,
+    activeSessionId: null,
     pid: null,
     status: 'running',
     startedAt: new Date().toISOString(),
@@ -445,6 +513,11 @@ function startDelegation(service: PrimeOrchestration, input: PrimeDelegateReques
     error: null,
     child: null,
     _lineBuffer: '',
+  }
+  if (input.daemonBacked === true) {
+    service.records.set(id, record)
+    void startDaemonBackedDelegation(service, record, input)
+    return record
   }
   let child: SpawnedChild
   try {
@@ -588,6 +661,18 @@ export function readEvents(record: { logFile: string }, limit: number): EventSum
   return chosen.reverse()
 }
 
+/**
+ * Read the trailing milestone events of an arbitrary prime-agent session
+ * `.jsonl` file — the same filtered tail read as {@link readEvents}, but for
+ * sessions that were not started by this orchestrator process.
+ * @param file - the absolute session `.jsonl` path.
+ * @param limit - maximum trailing events to return.
+ * @returns the chosen summarized events, oldest first.
+ */
+export function readSessionFileEvents(file: string, limit: number): EventSummary[] {
+  return readEvents({ logFile: file }, limit)
+}
+
 /** Extract the assistant text blocks of one message payload. */
 function contentText(message: Record<string, unknown>): string {
   if (!Array.isArray(message.content)) return ''
@@ -703,6 +788,7 @@ export function delegationView(record: DelegationRecord): PrimeDelegation {
     task: record.task.length > 200 ? `${record.task.slice(0, 200)}…` : record.task,
     cwd: record.cwd,
     sessionId: record.sessionId,
+    activeSessionId: record.activeSessionId ?? null,
     pid: record.pid,
     status: record.status,
     startedAt: record.startedAt,
@@ -803,7 +889,7 @@ export function heartbeatView(job: unknown, extra: unknown): HeartbeatView {
     runtimeKind: text(data.runtimeKind),
     deliveryMode: text(data.deliveryMode),
     activeSessionId: text(data.activeSessionId),
-    sessionId: text(data.sessionId),
+    sessionId: text(data.sessionId) ?? (extraData !== null ? text(extraData.sessionId) : null),
     scheduleKind: schedule !== null ? text(schedule.kind) : null,
     schedule: schedule !== null ? text(schedule.expression) : null,
     intervalMs: schedule !== null && typeof schedule.intervalMs === 'number' ? schedule.intervalMs : null,
@@ -1098,16 +1184,194 @@ export async function resolveAgentActiveId(config: PrimeConfig, target: string, 
   return match !== undefined && typeof match.id === 'string' && match.id.length > 0 ? match.id : target
 }
 
+/** Options for {@link resolveSessionIdentity}. */
+export interface ResolveIdentityOptions {
+  /**
+   * Roster provider override. Defaults to the `prime-agent list --json` CLI
+   * roster; tests inject an in-memory roster.
+   */
+  fetchRoster?: (cwd: string, signal: AbortSignal | undefined) => Promise<ListAgentsResult>
+  /**
+   * Sessions directory override. Defaults to `~/.prime/agent/sessions`;
+   * tests point this at a temp directory.
+   */
+  sessionsDir?: string
+  /**
+   * Return an identity with every handle null instead of throwing when
+   * nothing matches. An ambiguous session-id prefix still throws.
+   */
+  allowUnresolved?: boolean
+}
+
+/**
+ * Resolve any prime-agent id form into every applicable handle.
+ *
+ * Three namespaces are searched and merged: the in-process delegation table
+ * (8-char delegation ids), the daemon agent roster (active session ids, full
+ * session ids, session names), and the session-file directory (full session
+ * ids or unique prefixes). The first candidate tried as a file is a known full
+ * session id, so an 8-char delegation id is never mistaken for a file prefix.
+ *
+ * @param records - the in-process delegation table (delegation id → record).
+ * @param config - resolved config, used only by the default roster fetch.
+ * @param id - the id to resolve: delegation id, active session id, full
+ * session id (or unique prefix), or session name.
+ * @param cwd - working directory for the roster CLI fetch.
+ * @param signal - caller cancellation for the roster fetch.
+ * @param options - roster/sessions-dir overrides and unresolved behavior.
+ * @returns the merged identity across every namespace that matched.
+ * @throws on an empty id, an ambiguous session-id prefix, or (unless
+ * `allowUnresolved`) an id that matches nothing.
+ */
+export async function resolveSessionIdentity(
+  records: ReadonlyMap<string, { sessionId: string | null }>,
+  config: PrimeConfig,
+  id: string,
+  cwd: string,
+  signal?: AbortSignal,
+  options: ResolveIdentityOptions = {},
+): Promise<ResolvedIdentity> {
+  if (typeof id !== 'string' || id.length === 0) {
+    throw new Error('prime_agent: a non-empty id is required')
+  }
+  const sessionsDir = options.sessionsDir ?? primeSessionsDir()
+  const fetchRoster = options.fetchRoster
+    ?? ((rosterCwd: string, rosterSignal: AbortSignal | undefined) => listAgents(config, rosterCwd, false, rosterSignal))
+  const identity: ResolvedIdentity = {
+    delegationId: null,
+    activeSessionId: null,
+    sessionId: null,
+    sessionFile: null,
+    sessionName: null,
+    source: 'session-file',
+  }
+  // 1. In-process delegation records: an exact delegation id, or a full
+  //    session id owned by one of them.
+  let delegationId: string | null = null
+  let record = records.get(id)
+  if (record === undefined) {
+    for (const [key, candidate] of records) {
+      if (candidate.sessionId === id) {
+        delegationId = key
+        record = candidate
+        break
+      }
+    }
+  } else {
+    delegationId = id
+  }
+  if (record !== undefined && delegationId !== null) {
+    identity.delegationId = delegationId
+    if (record.sessionId !== null) identity.sessionId = record.sessionId
+  }
+  // 2. Daemon roster: match the raw id (or a delegation's session id) against
+  //    the active session id / session id, then against the session name.
+  let roster: ListAgentsResult | null = null
+  try {
+    roster = await fetchRoster(cwd, signal)
+  } catch {
+    roster = null
+  }
+  let rosterAgent: AgentView | null = null
+  let matchedByName = false
+  if (roster !== null && roster.ok && 'agents' in roster) {
+    const needles = new Set([id, identity.sessionId].filter((value): value is string => typeof value === 'string' && value.length > 0))
+    for (const agent of roster.agents) {
+      if ((agent.id !== null && needles.has(agent.id)) || (agent.sessionId !== null && needles.has(agent.sessionId))) {
+        rosterAgent = agent
+        break
+      }
+    }
+    if (rosterAgent === null) {
+      for (const agent of roster.agents) {
+        if (agent.sessionName !== null && agent.sessionName === id) {
+          rosterAgent = agent
+          matchedByName = true
+          break
+        }
+      }
+    }
+  }
+  if (rosterAgent !== null) {
+    if (rosterAgent.id !== null) identity.activeSessionId = rosterAgent.id
+    if (rosterAgent.sessionId !== null && identity.sessionId === null) identity.sessionId = rosterAgent.sessionId
+    if (rosterAgent.sessionName !== null) identity.sessionName = rosterAgent.sessionName
+    if (rosterAgent.sessionFile !== null) identity.sessionFile = rosterAgent.sessionFile
+  }
+  // 3. Session files: a known full session id first (exact), then the raw id
+  //    (exact or unique prefix). An ambiguous raw-id prefix is remembered.
+  let ambiguous: string | null = null
+  const fileCandidates = [identity.sessionId, id].filter((value, index, all): value is string =>
+    typeof value === 'string' && value.length > 0 && all.indexOf(value) === index)
+  for (const candidate of fileCandidates) {
+    try {
+      const file = resolveSessionFileIn(sessionsDir, candidate)
+      identity.sessionFile = file
+      identity.sessionId = basename(file, '.jsonl')
+      break
+    } catch (error) {
+      const message = messageOf(error)
+      if (candidate === id && /ambiguous/.test(message)) ambiguous = message
+    }
+  }
+  if (identity.sessionId === null && rosterAgent !== null && rosterAgent.sessionFile !== null) {
+    // A running session whose file the daemon knows but has not written yet.
+    identity.sessionId = basename(rosterAgent.sessionFile, '.jsonl')
+  }
+  const matched = identity.delegationId !== null || identity.activeSessionId !== null
+    || identity.sessionId !== null || identity.sessionFile !== null
+  if (matched) {
+    identity.source = record !== undefined ? 'delegation'
+      : rosterAgent !== null ? (matchedByName ? 'name' : 'agent')
+        : 'session-file'
+    return identity
+  }
+  if (ambiguous !== null) throw new Error(ambiguous)
+  if (options.allowUnresolved === true) return identity
+  const rosterNote = roster === null
+    ? 'daemon roster unreachable'
+    : roster.ok
+      ? `daemon roster (${roster.agents.length} agents)`
+      : `daemon roster unreachable (${roster.output})`
+  throw new Error(
+    `unknown prime-agent id "${id}" — tried: in-process delegation records (${records.size}), ${rosterNote}, and session files in ${sessionsDir}`,
+  )
+}
+
+/**
+ * Build the catalog decoration that fills a heartbeat view's `sessionId` and
+ * `sessionName` from a resolved identity.
+ * @param identity - the resolved identity, or null when unresolvable.
+ * @returns the `extra` object for {@link heartbeatView}.
+ */
+export function heartbeatExtra(identity: ResolvedIdentity | null): Record<string, unknown> {
+  if (identity === null) return {}
+  return {
+    ...(identity.sessionId !== null ? { sessionId: identity.sessionId } : {}),
+    ...(identity.sessionName !== null ? { sessionName: identity.sessionName } : {}),
+  }
+}
+
 /**
  * Resolve a prime-agent session JSONL file by exact filename or short-prefix id.
  * @param id - exact session id or short prefix.
  * @returns the resolved file path.
  */
 export function resolveSessionFile(id: unknown): string {
+  return resolveSessionFileIn(primeSessionsDir(), id)
+}
+
+/**
+ * Resolve a prime-agent session JSONL file inside one directory by exact
+ * filename or short-prefix id.
+ * @param dir - the sessions directory to search.
+ * @param id - exact session id or short prefix.
+ * @returns the resolved file path.
+ */
+export function resolveSessionFileIn(dir: string, id: unknown): string {
   if (typeof id !== 'string' || id.length === 0) {
     throw new Error('prime_agent: a non-empty session id is required')
   }
-  const dir = primeSessionsDir()
   if (!existsSync(dir)) throw new Error(`no prime-agent sessions directory at ${dir}`)
   const exact = join(dir, `${id}.jsonl`)
   if (existsSync(exact)) return exact
@@ -1262,6 +1526,8 @@ export class PrimeOrchestration extends Service {
   private readonly exitHandler: () => void
   private resolvedConfig: PrimeConfig
   private readonly rowConfig: Config
+  /** Short-lived daemon roster cache: `prime-agent list --json` is a subprocess. */
+  private rosterCache: { at: number; promise: Promise<ListAgentsResult> } | null = null
 
   constructor(ctx: Context, rowConfig: Config) {
     super(ctx, 'prime')
@@ -1361,6 +1627,133 @@ export class PrimeOrchestration extends Service {
     return [...this.records.values()].reverse().map(delegationView)
   }
 
+  /**
+   * Fetch the daemon agent roster, reusing a fresh cached fetch so repeated
+   * id resolution does not respawn `prime-agent list --json`.
+   * @param cwd - working directory for the CLI fetch.
+   * @param signal - caller cancellation.
+   * @param force - bypass the cache and fetch a fresh roster.
+   * @returns the projected agents, or the CLI failure.
+   */
+  private fetchRoster(cwd: string, signal: AbortSignal | undefined, force = false): Promise<ListAgentsResult> {
+    if (!force && this.rosterCache !== null && Date.now() - this.rosterCache.at < 5000) {
+      return this.rosterCache.promise
+    }
+    const entry = { at: Date.now(), promise: listAgents(this.config, cwd, false, signal) }
+    this.rosterCache = entry
+    return entry.promise
+  }
+
+  /**
+   * Resolve any id form — delegation id, daemon active session id, full
+   * session id (or unique prefix), or session name — into every applicable
+   * handle.
+   * @param id - the id to resolve.
+   * @param cwd - working directory for the roster fetch.
+   * @param signal - caller cancellation.
+   * @param options - overrides and unresolved behavior (see
+   * {@link ResolveIdentityOptions}).
+   * @returns the merged identity.
+   */
+  async resolveIdentity(id: string, cwd: string, signal?: AbortSignal, options: ResolveIdentityOptions = {}): Promise<ResolvedIdentity> {
+    return resolveSessionIdentity(this.records, this.config, id, cwd, signal, {
+      ...options,
+      fetchRoster: options.fetchRoster ?? ((rosterCwd: string, rosterSignal: AbortSignal | undefined) => this.fetchRoster(rosterCwd, rosterSignal)),
+    })
+  }
+
+  /**
+   * Resolve one action's `agent` argument to the daemon active session id.
+   * A raw value that already is an active session id resolves through the
+   * cached roster without a new fetch; a miss retries once against a fresh
+   * roster (the cache may predate the session). Falls back to the raw value
+   * when nothing resolves, so the daemon reports the failure itself.
+   * @param agent - any resolvable id (active session id, session id,
+   * delegation id, or session name).
+   * @param cwd - working directory for the roster fetch.
+   * @param signal - caller cancellation.
+   * @returns the daemon active session id, or the raw value.
+   */
+  private async resolveAgentArg(agent: string, cwd: string, signal?: AbortSignal): Promise<string> {
+    try {
+      let identity = await this.resolveIdentity(agent, cwd, signal, { allowUnresolved: true })
+      if (identity.activeSessionId === null) {
+        identity = await this.resolveIdentity(agent, cwd, signal, {
+          allowUnresolved: true,
+          fetchRoster: (rosterCwd: string, rosterSignal: AbortSignal | undefined) => this.fetchRoster(rosterCwd, rosterSignal, true),
+        })
+      }
+      return identity.activeSessionId ?? agent
+    } catch {
+      return agent
+    }
+  }
+
+  /**
+   * Best-effort identity lookup for decorating responses (heartbeat views):
+   * null when the id does not resolve.
+   */
+  private async agentIdentity(agent: string, cwd: string, signal?: AbortSignal): Promise<ResolvedIdentity | null> {
+    try {
+      return await this.resolveIdentity(agent, cwd, signal, { allowUnresolved: true })
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Inspect the session file behind one resolved identity: the full session id
+   * when known, else the active session id. A roster-matched session whose
+   * file has not been written yet yields a pending view instead of an error.
+   * @param identity - the resolved identity.
+   * @param fallbackId - the raw id, used when nothing better is known.
+   * @param eventLimit - max trailing events to return (0 = none).
+   * @returns the session inspection.
+   */
+  private inspectIdentitySession(identity: ResolvedIdentity, fallbackId: string, eventLimit: number): SessionInspection {
+    const hasFile = identity.sessionFile !== null && existsSync(identity.sessionFile)
+    if (identity.activeSessionId !== null && !hasFile) {
+      // The daemon roster matched but the session file does not exist yet.
+      const sessionId = identity.sessionId ?? fallbackId
+      return {
+        id: sessionId,
+        file: identity.sessionFile ?? join(primeSessionsDir(), `${sessionId}.jsonl`),
+        sizeBytes: 0,
+        modifiedAt: new Date().toISOString(),
+        goal: null,
+        goalContext: null,
+        lastSlashCommandResult: null,
+        lastCompaction: null,
+        idle: false,
+        lastActivityType: null,
+        events: [],
+      }
+    }
+    return inspectSession(identity.sessionId ?? identity.activeSessionId ?? fallbackId, eventLimit)
+  }
+
+  /**
+   * Resolve the trailing events of one delegation or session by any id form:
+   * an in-process delegation record first, then a session file on disk.
+   * @param id - delegation id, session id, active session id, or name.
+   * @param cwd - working directory for the roster fetch.
+   * @param limit - maximum trailing events to return.
+   * @param signal - caller cancellation.
+   * @returns the delegation view with events, or the session file with events.
+   */
+  private async resolveEvents(id: string, cwd: string, limit: number, signal?: AbortSignal): Promise<{ delegation: PrimeDelegation; events: EventSummary[] } | { sessionId: string; file: string; events: EventSummary[] }> {
+    let record = this.records.get(id)
+    if (record === undefined) {
+      const identity = await this.resolveIdentity(id, cwd, signal).catch(() => null)
+      if (identity !== null && identity.delegationId !== null) record = this.records.get(identity.delegationId)
+      if (record === undefined && identity !== null && identity.sessionFile !== null && existsSync(identity.sessionFile)) {
+        return { sessionId: identity.sessionId ?? id, file: identity.sessionFile, events: readSessionFileEvents(identity.sessionFile, limit) }
+      }
+    }
+    if (record !== undefined) return { delegation: delegationView(record), events: readEvents(record, limit) }
+    throw new Error(`unknown delegation or session id "${id}"`)
+  }
+
   /** The /prime/api/state payload (no CLI subprocess). */
   state(): PrimeState {
     return {
@@ -1410,18 +1803,38 @@ export class PrimeOrchestration extends Service {
   /** Stop one delegation (SIGTERM) or fall back to `prime-agent stop <id>`. */
   async stop(id: string, signal?: AbortSignal): Promise<PrimeStopResult> {
     if (typeof id !== 'string' || id.length === 0) throw new Error('prime_agent stop: "id" is required')
-    const record = this.records.get(id)
+    let record = this.records.get(id)
+    if (record === undefined) {
+      // A delegation's underlying session id also addresses its record.
+      for (const candidate of this.records.values()) {
+        if (candidate.sessionId === id) {
+          record = candidate
+          break
+        }
+      }
+    }
     if (record !== undefined) {
       const stopped = stopDelegation(record)
       return { action: 'stop', id, ok: true, stopped, delegation: delegationView(record) }
     }
-    const result = await runCli(this.config, ['stop', id], process.cwd(), signal, 60000)
+    // CLI fallback: resolve any id form (full session id, session name) to
+    // the daemon active session id the `stop` command accepts.
+    const identity = await this.resolveIdentity(id, process.cwd(), signal, { allowUnresolved: true })
+    const result = await runCli(this.config, ['stop', identity.activeSessionId ?? id], process.cwd(), signal, 60000)
     return { action: 'stop', id, ok: result.ok, output: result.output }
   }
 
   /** The full tool action dispatch, excluding `delegate`/`stop`. */
   async execute(action: Exclude<PrimeAction, 'delegate' | 'stop'>, args: Record<string, unknown> = {}, signal?: AbortSignal): Promise<unknown> {
     const cwd = typeof args.cwd === 'string' && args.cwd.length > 0 ? args.cwd : process.cwd()
+    // Uniform agent identity: every action that takes "agent" accepts any id
+    // form (delegation id, daemon active session id, full session id or
+    // unique prefix, or session name) and is resolved here to the daemon
+    // active session id the daemon commands need.
+    if (typeof args.agent === 'string' && args.agent.length > 0) {
+      const resolved = await this.resolveAgentArg(args.agent, cwd, signal)
+      if (resolved !== args.agent) args = { ...args, agent: resolved }
+    }
     switch (action) {
       case 'status': {
         const daemon = await runCli(this.config, ['status'], cwd, signal, 30000)
@@ -1434,11 +1847,11 @@ export class PrimeOrchestration extends Service {
         }
       }
       case 'events': {
-        if (typeof args.id !== 'string') throw new Error('prime_agent events: "id" is required')
-        const record = this.records.get(args.id)
-        if (record === undefined) throw new Error(`prime_agent events: unknown delegation id "${args.id}"`)
+        if (typeof args.id !== 'string' || args.id.length === 0) throw new Error('prime_agent events: "id" is required')
         const limit = Math.min(Math.max(typeof args.limit === 'number' ? args.limit : 20, 1), 100)
-        return { action: 'events', delegation: delegationView(record), events: readEvents(record, limit) }
+        // Any id form: an in-process delegation record, a delegation's session
+        // id, or a session file started outside this orchestrator.
+        return { action: 'events', ...(await this.resolveEvents(args.id, cwd, limit, signal)) }
       }
       case 'sessions': {
         return { action: 'sessions', ...listPrimeSessions() }
@@ -1455,12 +1868,13 @@ export class PrimeOrchestration extends Service {
       }
       case 'goal': {
         if (typeof args.id !== 'string' || args.id.length === 0) {
-          throw new Error('prime_agent goal: "id" (prime-agent session id) is required')
+          throw new Error('prime_agent goal: "id" (any prime-agent id form) is required')
         }
-        const view = inspectSession(args.id, 0)
+        const identity = await this.resolveIdentity(args.id, cwd, signal)
+        const view = this.inspectIdentitySession(identity, args.id, 0)
         return {
           action: 'goal',
-          id: args.id,
+          id: view.id,
           goal: view.goal,
           goalContext: view.goalContext,
           lastSlashCommandResult: view.lastSlashCommandResult,
@@ -1472,28 +1886,30 @@ export class PrimeOrchestration extends Service {
       }
       case 'session': {
         if (typeof args.id !== 'string' || args.id.length === 0) {
-          throw new Error('prime_agent session: "id" (prime-agent session id) is required')
+          throw new Error('prime_agent session: "id" (any prime-agent id form) is required')
         }
+        const identity = await this.resolveIdentity(args.id, cwd, signal)
         const limit = Math.min(Math.max(typeof args.limit === 'number' ? args.limit : 30, 1), 200)
-        return { action: 'session', ...inspectSession(args.id, limit) }
+        return { action: 'session', ...this.inspectIdentitySession(identity, args.id, limit) }
       }
       case 'send': {
         if (typeof args.id !== 'string' || args.id.length === 0) throw new Error('prime_agent send: "id" (session/agent) is required')
         if (typeof args.message !== 'string' || args.message.length === 0) throw new Error('prime_agent send: "message" is required')
+        const target = await this.resolveAgentArg(args.id, cwd, signal)
         const argv = ['send']
         if (typeof args.from === 'string' && args.from.length > 0) argv.push('--from', args.from)
         if (args.delivery === 'follow_up') argv.push('--follow-up')
         else if (args.delivery === 'steer') argv.push('--steer')
-        argv.push(args.id, args.message)
+        argv.push(target, args.message)
         const result = await runCli(this.config, argv, cwd, signal, 60000)
-        return { action: 'send', id: args.id, ok: result.ok, output: result.output }
+        return { action: 'send', id: target, ok: result.ok, output: result.output }
       }
       case 'send_message': {
         if (typeof args.target !== 'string' || args.target.length === 0) throw new Error('prime_agent send_message: "target" (agent name or active session id) is required')
         if (typeof args.message !== 'string' || args.message.length === 0) throw new Error('prime_agent send_message: "message" is required')
-        const targetActiveSessionId = await resolveAgentActiveId(this.config, args.target, cwd, signal)
+        const targetActiveSessionId = await this.resolveAgentArg(args.target, cwd, signal)
         const fromActiveSessionId = typeof args.from === 'string' && args.from.length > 0
-          ? await resolveAgentActiveId(this.config, args.from, cwd, signal)
+          ? await this.resolveAgentArg(args.from, cwd, signal)
           : undefined
         const deliveryMode = args.delivery === 'follow_up' ? 'follow_up' : 'steer'
         const result = await daemonRequest(this.config, {
@@ -1550,10 +1966,11 @@ export class PrimeOrchestration extends Service {
         if (typeof args.agent !== 'string' || args.agent.length === 0) {
           throw new Error('prime_agent heartbeat_get: "agent" (daemon active session id) is required')
         }
+        const identity = await this.agentIdentity(args.agent, cwd, signal)
         const result = await daemonRequest(this.config, { type: 'heartbeat_get', activeSessionId: args.agent }, 10000)
         if (!result.ok) throw new Error(`prime_agent heartbeat_get: ${result.output}`)
         const job = isRecord(result.data) ? result.data.heartbeat : undefined
-        return { action: 'heartbeat_get', agent: args.agent, heartbeat: isRecord(job) ? heartbeatView(job, {}) : null }
+        return { action: 'heartbeat_get', agent: args.agent, heartbeat: isRecord(job) ? heartbeatView(job, heartbeatExtra(identity)) : null }
       }
       case 'heartbeat_set': {
         if (typeof args.agent !== 'string' || args.agent.length === 0) {
@@ -1565,6 +1982,7 @@ export class PrimeOrchestration extends Service {
         if (typeof args.message !== 'string' || args.message.trim().length === 0) {
           throw new Error('prime_agent heartbeat_set: "message" (the recurring prompt) is required')
         }
+        const identity = await this.agentIdentity(args.agent, cwd, signal)
         const source = args.source ?? 'heartbeat'
         const command: Record<string, unknown> = source === 'heartbeat'
           ? { type: 'heartbeat_set', activeSessionId: args.agent, schedule: args.schedule, prompt: args.message, ...(args.delivery !== undefined ? { deliveryMode: args.delivery } : {}) }
@@ -1572,7 +1990,7 @@ export class PrimeOrchestration extends Service {
         const result = await daemonRequest(this.config, command, 10000)
         if (!result.ok) throw new Error(`prime_agent heartbeat_set: ${result.output}`)
         const job = isRecord(result.data) ? (result.data.heartbeat ?? result.data.job) : undefined
-        return { action: 'heartbeat_set', ok: true, heartbeat: heartbeatView(job, {}) }
+        return { action: 'heartbeat_set', ok: true, heartbeat: heartbeatView(job, heartbeatExtra(identity)) }
       }
       case 'heartbeat_action': {
         const action = args.heartbeatAction
@@ -1592,10 +2010,13 @@ export class PrimeOrchestration extends Service {
           }
           command = { type: 'heartbeat_manage', activeSessionId: args.agent, jobId: args.jobId, action }
         }
+        const identity = typeof args.agent === 'string' && args.agent.length > 0
+          ? await this.agentIdentity(args.agent, cwd, signal)
+          : null
         const result = await daemonRequest(this.config, command, 10000)
         if (!result.ok) throw new Error(`prime_agent heartbeat_action: ${result.output}`)
         const job = isRecord(result.data) ? (result.data.heartbeat ?? result.data.job) : undefined
-        return { action: 'heartbeat_action', ok: true, heartbeat: isRecord(job) ? heartbeatView(job, {}) : null }
+        return { action: 'heartbeat_action', ok: true, heartbeat: isRecord(job) ? heartbeatView(job, heartbeatExtra(identity)) : null }
       }
       case 'refine': {
         if (typeof args.agent !== 'string' || args.agent.length === 0) {
@@ -1994,12 +2415,12 @@ export class PrimeOrchestration extends Service {
           sendJson(res, 400, { ok: false, error: '"id" is required' })
           return
         }
-        const record = this.records.get(body.id)
-        if (record !== undefined) {
-          sendJson(res, 200, { ok: true, stopped: stopDelegation(record), delegation: delegationView(record) })
+        // Any id form: delegation id, active session id, session id, or name.
+        const result = await this.stop(body.id, undefined)
+        if (result.delegation !== undefined) {
+          sendJson(res, 200, { ok: true, stopped: result.stopped, delegation: result.delegation })
           return
         }
-        const result = await runCli(this.config, ['stop', body.id], process.cwd(), undefined, 60000)
         sendJson(res, result.ok ? 200 : 500, { ok: result.ok, output: result.output })
         return
       }
@@ -2015,13 +2436,13 @@ export class PrimeOrchestration extends Service {
           sendJson(res, 400, { ok: false, error: '"id" query parameter is required' })
           return
         }
-        const record = this.records.get(id)
-        if (record === undefined) {
-          sendJson(res, 404, { ok: false, error: `unknown delegation id "${id}"` })
-          return
-        }
         const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') ?? '20', 10) || 20, 1), 100)
-        sendJson(res, 200, { ok: true, delegation: delegationView(record), events: readEvents(record, limit) })
+        try {
+          // Any id form: delegation id, session id, active session id, or name.
+          sendJson(res, 200, { ok: true, ...(await this.resolveEvents(id, process.cwd(), limit)) })
+        } catch (error) {
+          sendJson(res, 404, { ok: false, error: messageOf(error) })
+        }
         return
       }
       if (url.pathname === '/prime/api/goal' && req.method === 'GET') {
@@ -2031,7 +2452,9 @@ export class PrimeOrchestration extends Service {
           return
         }
         try {
-          const view = inspectSession(id, 0)
+          // Any id form: active session id, session id, delegation id, or name.
+          const identity = await this.resolveIdentity(id, process.cwd(), undefined)
+          const view = this.inspectIdentitySession(identity, id, 0)
           sendJson(res, 200, {
             ok: true, id: view.id, goal: view.goal, goalContext: view.goalContext,
             lastSlashCommandResult: view.lastSlashCommandResult, lastCompaction: view.lastCompaction,
@@ -2052,8 +2475,9 @@ export class PrimeOrchestration extends Service {
           sendJson(res, 400, { ok: false, error: '"message" is required' })
           return
         }
-        const result = await runCli(this.config, ['send', body.id, body.message], process.cwd(), undefined, 60000)
-        sendJson(res, result.ok ? 200 : 500, { ok: result.ok, id: body.id, output: result.output })
+        const target = await this.resolveAgentArg(body.id, process.cwd(), undefined)
+        const result = await runCli(this.config, ['send', target, body.message], process.cwd(), undefined, 60000)
+        sendJson(res, result.ok ? 200 : 500, { ok: result.ok, id: target, output: result.output })
         return
       }
       if (url.pathname === '/prime/api/shutdown' && req.method === 'POST') {
@@ -2070,7 +2494,9 @@ export class PrimeOrchestration extends Service {
           return
         }
         try {
-          sendJson(res, 200, { ok: true, ...inspectSession(id, 30) })
+          // Any id form: active session id, session id, delegation id, or name.
+          const identity = await this.resolveIdentity(id, process.cwd(), undefined)
+          sendJson(res, 200, { ok: true, ...this.inspectIdentitySession(identity, id, 30) })
         } catch (error) {
           sendJson(res, 404, { ok: false, error: messageOf(error) })
         }
@@ -2105,17 +2531,19 @@ export class PrimeOrchestration extends Service {
           sendJson(res, 400, { ok: false, error: '"source" must be "heartbeat" or "cron"' })
           return
         }
+        const agent = await this.resolveAgentArg(body.agent, process.cwd(), undefined)
+        const identity = await this.agentIdentity(agent, process.cwd(), undefined)
         const source = body.source ?? 'heartbeat'
         const command: Record<string, unknown> = source === 'heartbeat'
-          ? { type: 'heartbeat_set', activeSessionId: body.agent, schedule: body.schedule, prompt: body.prompt, ...(body.delivery !== undefined ? { deliveryMode: body.delivery } : {}) }
-          : { type: 'cron_add', activeSessionId: body.agent, schedule: body.schedule, prompt: body.prompt }
+          ? { type: 'heartbeat_set', activeSessionId: agent, schedule: body.schedule, prompt: body.prompt, ...(body.delivery !== undefined ? { deliveryMode: body.delivery } : {}) }
+          : { type: 'cron_add', activeSessionId: agent, schedule: body.schedule, prompt: body.prompt }
         const result = await daemonRequest(this.config, command, 10000)
         if (!result.ok) {
           sendJson(res, 502, { ok: false, error: result.output })
           return
         }
         const job = isRecord(result.data) ? (result.data.heartbeat ?? result.data.job) : undefined
-        sendJson(res, 200, { ok: true, heartbeat: heartbeatView(job, {}) })
+        sendJson(res, 200, { ok: true, agent, heartbeat: heartbeatView(job, heartbeatExtra(identity)) })
         return
       }
       if (url.pathname === '/prime/api/heartbeats/action' && req.method === 'POST') {
@@ -2134,16 +2562,16 @@ export class PrimeOrchestration extends Service {
           command = { type: 'cron_cancel', jobId: body.jobId }
         } else if (action === 'clear') {
           if (typeof body.agent !== 'string' || body.agent.length === 0) {
-            sendJson(res, 400, { ok: false, error: '"agent" (daemon active session id) is required for clear' })
+            sendJson(res, 400, { ok: false, error: '"agent" (any resolvable session id) is required for clear' })
             return
           }
-          command = { type: 'heartbeat_update', activeSessionId: body.agent, action: 'clear' }
+          command = { type: 'heartbeat_update', activeSessionId: await this.resolveAgentArg(body.agent, process.cwd(), undefined), action: 'clear' }
         } else {
           if (typeof body.jobId !== 'string' || body.jobId.length === 0 || typeof body.agent !== 'string' || body.agent.length === 0) {
-            sendJson(res, 400, { ok: false, error: '"jobId" and "agent" (daemon active session id) are required for pause/resume/stop' })
+            sendJson(res, 400, { ok: false, error: '"jobId" and "agent" (any resolvable session id) are required for pause/resume/stop' })
             return
           }
-          command = { type: 'heartbeat_manage', activeSessionId: body.agent, jobId: body.jobId, action }
+          command = { type: 'heartbeat_manage', activeSessionId: await this.resolveAgentArg(body.agent, process.cwd(), undefined), jobId: body.jobId, action }
         }
         const result = await daemonRequest(this.config, command, 10000)
         if (!result.ok) {
@@ -2155,18 +2583,20 @@ export class PrimeOrchestration extends Service {
         return
       }
       if (url.pathname === '/prime/api/heartbeats/get' && req.method === 'GET') {
-        const agent = url.searchParams.get('agent')
-        if (!agent) {
+        const rawAgent = url.searchParams.get('agent')
+        if (!rawAgent) {
           sendJson(res, 400, { ok: false, error: '"agent" query parameter is required' })
           return
         }
+        const agent = await this.resolveAgentArg(rawAgent, process.cwd(), undefined)
+        const identity = await this.agentIdentity(agent, process.cwd(), undefined)
         const result = await daemonRequest(this.config, { type: 'heartbeat_get', activeSessionId: agent }, 10000)
         if (!result.ok) {
           sendJson(res, 502, { ok: false, error: result.output })
           return
         }
         const job = isRecord(result.data) ? result.data.heartbeat : undefined
-        sendJson(res, 200, { ok: true, agent, heartbeat: isRecord(job) ? heartbeatView(job, {}) : null })
+        sendJson(res, 200, { ok: true, agent, heartbeat: isRecord(job) ? heartbeatView(job, heartbeatExtra(identity)) : null })
         return
       }
       if (url.pathname === '/prime/api/send_message' && req.method === 'POST') {
@@ -2183,9 +2613,9 @@ export class PrimeOrchestration extends Service {
           sendJson(res, 400, { ok: false, error: '"delivery" must be "steer" or "follow_up"' })
           return
         }
-        const targetActiveSessionId = await resolveAgentActiveId(this.config, body.target, process.cwd(), undefined)
+        const targetActiveSessionId = await this.resolveAgentArg(body.target, process.cwd(), undefined)
         const fromActiveSessionId = typeof body.from === 'string' && body.from.length > 0
-          ? await resolveAgentActiveId(this.config, body.from, process.cwd(), undefined)
+          ? await this.resolveAgentArg(body.from, process.cwd(), undefined)
           : undefined
         const result = await daemonRequest(this.config, {
           type: 'send_message',
@@ -2214,7 +2644,7 @@ export class PrimeOrchestration extends Service {
             sendJson(res, 400, { ok: false, error: '"agent" is required for clear' })
             return
           }
-          command = { type: 'agent_messages_clear', activeSessionId: body.agent }
+          command = { type: 'agent_messages_clear', activeSessionId: await this.resolveAgentArg(body.agent, process.cwd(), undefined) }
         } else if (action === 'pause') {
           command = { type: 'agent_messages_pause' }
         } else if (action === 'resume') {
@@ -2233,12 +2663,13 @@ export class PrimeOrchestration extends Service {
       if (url.pathname === '/prime/api/refine' && req.method === 'POST') {
         const body = (await readBody(req)) as Record<string, unknown>
         if (typeof body.agent !== 'string' || body.agent.length === 0) {
-          sendJson(res, 400, { ok: false, error: '"agent" (daemon active session id) is required' })
+          sendJson(res, 400, { ok: false, error: '"agent" (any resolvable session id) is required' })
           return
         }
+        const agent = await this.resolveAgentArg(body.agent, process.cwd(), undefined)
         const command: Record<string, unknown> = {
           type: 'refine',
-          activeSessionId: body.agent,
+          activeSessionId: agent,
           ...(typeof body.instructions === 'string' && body.instructions.length > 0 ? { instructions: body.instructions } : {}),
           ...(typeof body.rollbackId === 'string' && body.rollbackId.length > 0 ? { rollbackId: body.rollbackId } : {}),
           ...(body.global === true ? { global: true } : {}),
@@ -2248,37 +2679,39 @@ export class PrimeOrchestration extends Service {
           sendJson(res, 502, { ok: false, error: result.output })
           return
         }
-        sendJson(res, 200, { ok: true, agent: body.agent, result: result.data })
+        sendJson(res, 200, { ok: true, agent, result: result.data })
         return
       }
       if (url.pathname === '/prime/api/rename' && req.method === 'POST') {
         const body = (await readBody(req)) as Record<string, unknown>
         if (typeof body.agent !== 'string' || body.agent.length === 0) {
-          sendJson(res, 400, { ok: false, error: '"agent" (daemon active session id) is required' })
+          sendJson(res, 400, { ok: false, error: '"agent" (any resolvable session id) is required' })
           return
         }
         if (typeof body.name !== 'string' || body.name.trim().length === 0) {
           sendJson(res, 400, { ok: false, error: '"name" is required' })
           return
         }
-        const result = await daemonRequest(this.config, { type: 'rename', activeSessionId: body.agent, name: body.name.trim() }, 30000)
+        const agent = await this.resolveAgentArg(body.agent, process.cwd(), undefined)
+        const result = await daemonRequest(this.config, { type: 'rename', activeSessionId: agent, name: body.name.trim() }, 30000)
         if (!result.ok) {
           sendJson(res, 502, { ok: false, error: result.output })
           return
         }
         const renamed = isRecord(result.data) ? agentView(result.data) : null
-        sendJson(res, 200, { ok: true, agent: body.agent, name: body.name.trim(), session: renamed })
+        sendJson(res, 200, { ok: true, agent, name: body.name.trim(), session: renamed })
         return
       }
       if (url.pathname === '/prime/api/compact' && req.method === 'POST') {
         const body = (await readBody(req)) as Record<string, unknown>
         if (typeof body.agent !== 'string' || body.agent.length === 0) {
-          sendJson(res, 400, { ok: false, error: '"agent" (daemon active session id) is required' })
+          sendJson(res, 400, { ok: false, error: '"agent" (any resolvable session id) is required' })
           return
         }
+        const agent = await this.resolveAgentArg(body.agent, process.cwd(), undefined)
         const command: Record<string, unknown> = {
           type: 'compact',
-          activeSessionId: body.agent,
+          activeSessionId: agent,
           ...(typeof body.instructions === 'string' && body.instructions.length > 0 ? { customInstructions: body.instructions } : {}),
         }
         const result = await daemonRequest(this.config, command, 120000)
@@ -2286,21 +2719,22 @@ export class PrimeOrchestration extends Service {
           sendJson(res, 502, { ok: false, error: result.output })
           return
         }
-        sendJson(res, 200, { ok: true, agent: body.agent, result: result.data })
+        sendJson(res, 200, { ok: true, agent, result: result.data })
         return
       }
       if (url.pathname === '/prime/api/wait_for_idle' && req.method === 'POST') {
         const body = (await readBody(req)) as Record<string, unknown>
         if (typeof body.agent !== 'string' || body.agent.length === 0) {
-          sendJson(res, 400, { ok: false, error: '"agent" (daemon active session id) is required' })
+          sendJson(res, 400, { ok: false, error: '"agent" (any resolvable session id) is required' })
           return
         }
-        const result = await daemonRequest(this.config, { type: 'wait_for_idle', activeSessionId: body.agent }, 300000)
+        const agent = await this.resolveAgentArg(body.agent, process.cwd(), undefined)
+        const result = await daemonRequest(this.config, { type: 'wait_for_idle', activeSessionId: agent }, 300000)
         if (!result.ok) {
           sendJson(res, 502, { ok: false, error: result.output })
           return
         }
-        sendJson(res, 200, { ok: true, agent: body.agent, idle: true })
+        sendJson(res, 200, { ok: true, agent, idle: true })
         return
       }
       if (url.pathname === '/prime/api/saved_sessions' && req.method === 'GET') {

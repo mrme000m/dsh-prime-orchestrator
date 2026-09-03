@@ -253,6 +253,15 @@
     fetch: false
     searchTimeoutMs: 60000
 
+# Cloudflare Workers AI: the model-facing `cf_ai_run`/`cf_ai_models` tools from
+# this bundle's `./cf-tools` subpath export. Like `tool-bash`, the row only
+# registers into the HOST `tools` registry (plus resolving the host
+# `credentials` seam for the bearer token) and provides nothing, so it needs
+# no isolate realm; `dsh-prime-orchestrator/cf-tools` resolves from the
+# installed bundle.
+- id: cf-tools
+  name: 'dsh-prime-orchestrator/cf-tools'
+
 # ── prime-agent orchestration ───────────────────────────────────────────────
 
 # The Prime Agent orchestration engine lives on the HOST plane (the

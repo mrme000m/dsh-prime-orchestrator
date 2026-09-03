@@ -16,6 +16,7 @@ import type {
 } from './api.ts'
 import type { Selection } from './PrimePanel.tsx'
 import { LiveSession } from './LiveSession.tsx'
+import { CopyId } from './CopyId.tsx'
 import type { PrimePanelProps } from './PrimePanel.tsx'
 import css from './PrimePanel.module.css'
 
@@ -168,6 +169,7 @@ export function AgentDetail(props: AgentDetailProps) {
             {inspection.idle ? t('detail.idle') : t('detail.active')}
           </span>
         )}
+        <CopyId value={selection.id} t={t} className={css.detailCopy} />
       </header>
 
       {delegation !== undefined && (

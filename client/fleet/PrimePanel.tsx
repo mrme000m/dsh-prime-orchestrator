@@ -6,20 +6,26 @@
 // arrives through the store seat, actions through the inject face, copy
 // through the locale seat.
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'
 import {
   Button, Pill, RiskConfirmation, StateDot, TerminalBlock, Tooltip,
-  IconAgentPresetOutline16, IconCloseOutline16, IconRefreshOutline16, IconSendOutline16,
+  IconAgentPresetOutline16, IconCloseFill14, IconCloseOutline16, IconDataOutline16,
+  IconRefreshOutline16, IconSearchOutline16, IconSendOutline16,
   IconStopFill16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale, PropsRuntime, PropsStore } from '@deepseek-ai/dsh-client-ui-slots'
 import type { PrimeAgent, PrimeAgentMessagesStatus, PrimeApi, PrimeDelegateInput, PrimeDelegation, PrimeEventSummary, PrimeHeartbeat, PrimeSessionInspection } from './api.ts'
 import type { createPrimeStore } from './store.ts'
-import { ageOf, agentActivityOf, agentSessionId, baseNameOf, dotStateOf, runningCount, sectionAgents, type AgentActivity } from './store.ts'
+import {
+  ageOf, agentActivityOf, agentMatches, agentSessionId, baseNameOf, delegationMatches, dotStateOf,
+  runningCount, sectionAgents, truncate, type AgentActivity,
+} from './store.ts'
 import { DelegateForm } from './DelegateForm.tsx'
 import { AgentDetail } from './AgentDetail.tsx'
 import { Heartbeats } from './Heartbeats.tsx'
+import { CopyId } from './CopyId.tsx'
+import { EmptyState, SkeletonRows } from './States.tsx'
 import css from './PrimePanel.module.css'
 
 /** Injected share: the API face plus the layout close transition. */
@@ -72,6 +78,7 @@ function DelegationCard(props: {
       <div className={css.cardHead}>
         <StateDot state={dotStateOf(d.status)} />
         <span className={css.cardId}>{`#${d.id}`}</span>
+        <CopyId value={d.id} t={t} />
         <span className={clsx(css.cardState, css[`state-${d.status}`])}>{t(`status.${d.status}.label`)}</span>
         <span className={css.cardAge}>{props.t(`time.${ageOf(d.startedAt, props.now).unit}`,
           { n: ageOf(d.startedAt, props.now).n })}</span>
@@ -104,7 +111,13 @@ const AGENT_DOT: Record<AgentActivity, 'ongoing' | 'done' | 'error' | 'warning'>
   draft: 'warning',
 }
 
-/** One daemon agent row: activity dot, task/name, model + thinking + message facts. */
+/**
+ * One daemon agent row: activity dot, the first message as a truncated
+ * name (full text in the title), model + thinking + message facts, and the
+ * active session id as a secondary identifier with its copy button. A div
+ * with button semantics, not a `<button>`, so the nested CopyId control
+ * stays valid HTML.
+ */
 function AgentRow(props: {
   agent: PrimeAgent
   t: PrimePanelProps['t']
@@ -127,31 +140,81 @@ function AgentRow(props: {
   if (a.taskState === 'needs_input') chips.push(t('agents.chip.needsInput'))
   if (a.hasActiveHeartbeat) chips.push(t('agents.chip.heartbeat'))
   if (a.hasRegisteredCronJob && !a.hasActiveHeartbeat) chips.push(t('agents.chip.scheduled'))
+  // Name: the first message clipped to ~80 chars (full text in the title),
+  // falling back to the short id for draft rows without one.
+  const name = a.firstMessage !== null && a.firstMessage.length > 0
+    ? truncate(a.firstMessage, 80)
+    : (a.id ?? '').slice(0, 8)
+  // Secondary identifier: the daemon active id, short, copyable, with the
+  // full session id in the tooltip.
+  const activeId = a.id ?? a.sessionId
+  const fullSessionId = a.sessionId ?? a.id
   return (
-    <button
-      type="button"
+    <div
       className={css.agentRow}
       data-activity={activity}
+      role="button"
+      tabIndex={0}
       onClick={props.onOpen}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          props.onOpen()
+        }
+      }}
       aria-label={t('agents.aria', { id: a.id ?? a.sessionId ?? '' })}
     >
       <StateDot state={AGENT_DOT[activity]} className={css.agentDot} />
       <span className={css.agentBody}>
-        <span className={css.agentName}>{a.firstMessage ?? (a.id ?? '').slice(0, 8)}</span>
+        <span className={css.agentName} title={a.firstMessage ?? undefined}>{name}</span>
         <span className={css.agentMeta}>{facts.join(' · ')}</span>
+        {activeId !== null && activeId.length > 0 && (
+          <span className={css.agentIdRow} title={fullSessionId ?? undefined}>
+            <span className={css.agentIdShort}>{activeId.slice(0, 8)}</span>
+            <CopyId value={activeId} t={t} />
+          </span>
+        )}
       </span>
       {chips.length > 0 && <span className={css.agentChips}>{chips.join(' · ')}</span>}
-    </button>
+    </div>
   )
 }
 
-/** The daemon roster: running/idle/inactive sections of agent rows. */
+/**
+ * The daemon roster: running/idle/inactive sections of agent rows. Receives
+ * the already-filtered rows plus the unfiltered count so it can tell "no
+ * agents at all" (icon-led empty state) from "the filter excluded them"
+ * (quiet note; the panel's global no-results state covers the both-empty
+ * case).
+ */
 function RosterSection(props: {
   agents: readonly PrimeAgent[]
+  /** The roster size before the fleet filter was applied. */
+  allCount: number
+  /** Whether a fleet filter is currently active. */
+  filtered: boolean
   t: PrimePanelProps['t']
   onOpen: (id: string) => void
 }) {
   const { agents, t } = props
+  if (props.allCount === 0) {
+    return (
+      <section className={css.roster}>
+        <EmptyState
+          icon={<IconAgentPresetOutline16 size={18} />}
+          title={t('agents.empty.title')}
+          body={t('agents.empty.body')}
+        />
+      </section>
+    )
+  }
+  if (props.filtered && agents.length === 0) {
+    return (
+      <section className={css.roster}>
+        <div className={css.empty}>{t('search.noAgents')}</div>
+      </section>
+    )
+  }
   const sections = sectionAgents(agents)
   const groups: { key: AgentActivity; label: string; rows: PrimeAgent[] }[] = [
     { key: 'active', label: t('agents.section.active'), rows: sections.active },
@@ -160,7 +223,6 @@ function RosterSection(props: {
   ]
   return (
     <section className={css.roster}>
-      {agents.length === 0 && <div className={css.empty}>{t('agents.empty')}</div>}
       {groups.map(group => group.rows.length > 0 && (
         <div key={group.key} className={css.rosterGroup}>
           <div className={css.rosterLabel}>{`${group.label} · ${group.rows.length}`}</div>
@@ -179,6 +241,50 @@ function RosterSection(props: {
 }
 
 /**
+ * The fleet filter input: case-insensitive substring match over task text,
+ * first messages, ids, models, and cwd basenames. The value lives in the
+ * panel (survives tab switches and drill-ins); the clear button resets it.
+ */
+function SearchBox(props: {
+  value: string
+  onChange: (next: string) => void
+  t: PrimePanelProps['t']
+}) {
+  const { t } = props
+  return (
+    <div className={css.searchBox}>
+      <IconSearchOutline16 size={14} className={css.searchIcon} aria-hidden />
+      <input
+        type="text"
+        className={css.searchInput}
+        value={props.value}
+        placeholder={t('search.placeholder')}
+        aria-label={t('search.label')}
+        spellCheck={false}
+        onChange={(event) => { props.onChange(event.target.value) }}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.stopPropagation()
+            props.onChange('')
+          }
+        }}
+      />
+      {props.value.length > 0 && (
+        <button
+          type="button"
+          className={css.searchClear}
+          aria-label={t('search.clear')}
+          title={t('search.clear')}
+          onClick={() => { props.onChange('') }}
+        >
+          <IconCloseFill14 size={12} />
+        </button>
+      )}
+    </div>
+  )
+}
+
+/**
  * Render the Prime fleet column.
  * @param props - composed slot props (column state, feed store, api/close inject, locale).
  * @returns the panel element tree.
@@ -188,6 +294,7 @@ export function PrimePanel({ collapsed, useStore, actions, api, close, t }: Prim
   const feedError = useStore(s => s.error)
   const [tab, setTab] = useState<Tab>('fleet')
   const [selection, setSelection] = useState<Selection | undefined>(undefined)
+  const [filter, setFilter] = useState('')
   const [manualRefresh, setManualRefresh] = useState(0)
   const [refreshing, setRefreshing] = useState(false)
   const [detailEvents, setDetailEvents] = useState<readonly PrimeEventSummary[] | undefined>(undefined)
@@ -332,10 +439,61 @@ export function PrimePanel({ collapsed, useStore, actions, api, close, t }: Prim
     ended: feed === undefined ? 0 : feed.delegations.length - runningCount(feed),
   }), [feed])
 
-  const refresh = (): void => {
+  // Stable across renders: the keyboard listener depends on it.
+  const refresh = useCallback((): void => {
     setRefreshing(true)
     setManualRefresh(n => n + 1)
-  }
+  }, [])
+
+  // The fleet filter's derived views: matched delegations, matched agents,
+  // and the sessions tab's rows (newest first, agent facts joined in).
+  const filterActive = filter.trim().length > 0
+  const visibleDelegations = useMemo(
+    () => feed?.delegations.filter(d => delegationMatches(d, filter)) ?? [],
+    [feed, filter])
+  const visibleAgents = useMemo(
+    () => (agents ?? []).filter(a => agentMatches(a, filter)),
+    [agents, filter])
+  const sessions = useMemo(() => {
+    if (feed === undefined) return undefined
+    return [...feed.sessions].sort((a, b) => Date.parse(b.modifiedAt) - Date.parse(a.modifiedAt))
+  }, [feed])
+  const agentBySession = useMemo(() => {
+    const map = new Map<string, PrimeAgent>()
+    for (const agent of agents ?? []) {
+      const key = agentSessionId(agent)
+      if (key.length > 0) map.set(key, agent)
+    }
+    return map
+  }, [agents])
+
+  // Keyboard refresh: plain R (outside text fields) or Cmd/Ctrl+R while the
+  // fleet column holds focus. The capture-phase listener precedes the
+  // browser's own reload, so preventDefault only fires for this column.
+  const rootRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      const root = rootRef.current
+      if (root === null) return
+      const focus = document.activeElement
+      if (focus === null || !(root.contains(focus))) return
+      const inField = focus instanceof HTMLElement
+        && (focus.tagName === 'INPUT' || focus.tagName === 'TEXTAREA' || focus.tagName === 'SELECT' || focus.isContentEditable)
+      const isR = event.key === 'r' || event.key === 'R'
+      if (!isR) return
+      if (event.metaKey || event.ctrlKey) {
+        event.preventDefault()
+        refresh()
+        return
+      }
+      if (!event.altKey && !inField) {
+        event.preventDefault()
+        refresh()
+      }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => { window.removeEventListener('keydown', onKey, true) }
+  }, [refresh])
 
   const afterAction = (): void => {
     setRefreshing(true)
@@ -369,7 +527,7 @@ export function PrimePanel({ collapsed, useStore, actions, api, close, t }: Prim
   }
 
   return (
-    <div className={css.root} data-collapsed={collapsed || undefined}>
+    <div ref={rootRef} className={css.root} data-collapsed={collapsed || undefined}>
       <header className={css.header}>
         <div className={css.titleRow}>
           <h2 className={css.title}>
@@ -377,7 +535,7 @@ export function PrimePanel({ collapsed, useStore, actions, api, close, t }: Prim
             {t('title')}
           </h2>
           <div className={css.headerActions}>
-            <Tooltip label={refreshing ? t('refreshing') : t('refresh')} side="bottom">
+            <Tooltip label={refreshing ? t('refreshing') : t('refresh.hint')} side="bottom">
               <button type="button" className={css.iconButton} aria-label={t('refresh')} onClick={refresh}>
                 <IconRefreshOutline16 size={16} className={clsx(refreshing && css.spinning)} />
               </button>
@@ -443,13 +601,23 @@ export function PrimePanel({ collapsed, useStore, actions, api, close, t }: Prim
                       <IconSendOutline16 size={12} className={css.noticeIcon} aria-hidden />
                     </p>
                   )}
-                  {feed?.delegations.length === 0 && (
-                    <div className={css.empty}>
-                      <div className={css.emptyTitle}>{t('fleet.empty.title')}</div>
-                      <div>{t('fleet.empty.body')}</div>
-                    </div>
+                  <SearchBox value={filter} onChange={setFilter} t={t} />
+                  {filterActive && feed !== undefined && agents !== undefined
+                    && visibleDelegations.length === 0 && visibleAgents.length === 0 && (
+                    <EmptyState
+                      icon={<IconSearchOutline16 size={18} />}
+                      title={t('search.noResults.title')}
+                      body={t('search.noResults.body', { query: filter.trim() })}
+                    />
                   )}
-                  {feed?.delegations.map(d => (
+                  {feed !== undefined && !filterActive && feed.delegations.length === 0 && (
+                    <EmptyState
+                      icon={<IconSendOutline16 size={18} />}
+                      title={t('fleet.empty.title')}
+                      body={t('fleet.empty.body')}
+                    />
+                  )}
+                  {visibleDelegations.map(d => (
                     <DelegationCard
                       key={d.id}
                       delegation={d}
@@ -462,26 +630,60 @@ export function PrimePanel({ collapsed, useStore, actions, api, close, t }: Prim
                   {agentsError !== undefined
                     ? <p className={css.globalError}>{t('agents.failed', { message: agentsError })}</p>
                     : agents === undefined
-                      ? <div className={css.empty}>{t('agents.loading')}</div>
-                      : <RosterSection agents={agents} t={t} onOpen={(id) => { openSelection({ kind: 'session', id }) }} />}
+                      ? <SkeletonRows rows={4} label={t('loading.label')} />
+                      : (
+                        <RosterSection
+                          agents={visibleAgents}
+                          allCount={agents.length}
+                          filtered={filterActive}
+                          t={t}
+                          onOpen={(id) => { openSelection({ kind: 'session', id }) }}
+                        />
+                      )}
                 </div>
               )}
               {tab === 'sessions' && (
                 <div className={css.stack}>
-                  {feed?.sessions.length === 0 && <div className={css.empty}>{t('sessions.empty')}</div>}
-                  {feed?.sessions.map(s => (
-                    <button
-                      type="button"
-                      key={s.id}
-                      className={css.sessionRow}
-                      onClick={() => { openSelection({ kind: 'session', id: s.id }) }}
-                    >
-                      <span className={css.sessionId}>{s.id.slice(0, 8)}</span>
-                      <span className={css.sessionSize}>{`${(s.sizeBytes / 1024).toFixed(1)} KB`}</span>
-                      <span className={css.sessionAge}>{t(`time.${ageOf(s.modifiedAt, now).unit}`,
-                        { n: ageOf(s.modifiedAt, now).n })}</span>
-                    </button>
-                  ))}
+                  {feed === undefined && feedError === undefined
+                    ? <SkeletonRows rows={4} label={t('loading.label')} />
+                    : feed !== undefined && sessions !== undefined && sessions.length === 0 && (
+                      <EmptyState
+                        icon={<IconDataOutline16 size={18} />}
+                        title={t('sessions.empty.title')}
+                        body={t('sessions.empty.body')}
+                      />
+                    )}
+                  {sessions?.map(s => {
+                    // Join roster facts onto a session row when its file
+                    // matches a known agent: model + cwd basename.
+                    const agent = agentBySession.get(s.id)
+                    const model = agent?.model ?? agent?.modelId ?? null
+                    const cwd = agent?.cwd !== null && agent?.cwd !== undefined ? baseNameOf(agent.cwd) : null
+                    const facts = [model, cwd].filter((part): part is string => part !== null)
+                    return (
+                      <div
+                        key={s.id}
+                        className={css.sessionRow}
+                        role="button"
+                        tabIndex={0}
+                        aria-label={t('sessions.row.aria', { id: s.id })}
+                        onClick={() => { openSelection({ kind: 'session', id: s.id }) }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault()
+                            openSelection({ kind: 'session', id: s.id })
+                          }
+                        }}
+                      >
+                        <span className={css.sessionId} title={s.id}>{s.id}</span>
+                        {facts.length > 0 && <span className={css.sessionFacts}>{facts.join(' · ')}</span>}
+                        <CopyId value={s.id} t={t} />
+                        <span className={css.sessionSize}>{`${(s.sizeBytes / 1024).toFixed(1)} KB`}</span>
+                        <span className={css.sessionAge}>{t(`time.${ageOf(s.modifiedAt, now).unit}`,
+                          { n: ageOf(s.modifiedAt, now).n })}</span>
+                      </div>
+                    )
+                  })}
                 </div>
               )}
               {tab === 'heartbeats' && (

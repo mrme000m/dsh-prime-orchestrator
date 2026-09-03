@@ -75,6 +75,9 @@
 .back:focus-visible,
 .sessionRow:focus-visible,
 .card:focus-visible,
+.copyId:focus-visible,
+.searchClear:focus-visible,
+.searchInput:focus-visible,
 .delegateToggle:focus-visible {
   outline: 2px solid var(--dsw-alias-brand-primary);
   outline-offset: 1px;
@@ -148,6 +151,8 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-behavior: smooth;
   padding: 10px 16px 12px;
 }
 
@@ -195,6 +200,34 @@
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+/* Copy-to-clipboard: icon-only, quiet until hovered. */
+.copyId {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+
+.copyId:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.copyId[data-copied] {
+  color: var(--dsw-alias-state-success-primary);
+}
+
+.detailCopy {
+  margin-left: auto;
 }
 
 .cardId {
@@ -280,7 +313,7 @@
 
 .sessionRow {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   width: 100%;
   padding: 8px 10px;
@@ -297,9 +330,26 @@
   background: var(--dsw-alias-interactive-bg-hover);
 }
 
+/* Full session id, ellipsized; the title carries the untruncated value. */
 .sessionId {
+  flex: 1 1 40%;
+  min-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-family: var(--ds-font-family-code);
   font-size: 12px;
+}
+
+/* Roster facts (model · cwd basename) joined onto a matching session row. */
+.sessionFacts {
+  flex: 1 1 30%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
 }
 
 .sessionSize {
@@ -384,6 +434,22 @@
   color: var(--dsw-alias-label-tertiary);
 }
 
+/* Secondary identifier: short active id + its copy button, full session id
+   in the tooltip. */
+.agentIdRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+}
+
+.agentIdShort {
+  font-family: var(--ds-font-family-code);
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
 .agentChips {
   flex: none;
   font-size: 12px;
@@ -418,6 +484,8 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-behavior: smooth;
   padding: 12px 16px;
 }
 
@@ -677,6 +745,115 @@
   gap: 6px;
 }
 
+/* ── fleet search filter ──────────────────────────────────────────────── */
+
+.searchBox {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.searchIcon {
+  position: absolute;
+  left: 8px;
+  color: var(--dsw-alias-label-tertiary);
+  pointer-events: none;
+}
+
+.searchInput {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 26px 5px 26px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 12px;
+}
+
+.searchInput::placeholder {
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.searchClear {
+  position: absolute;
+  right: 4px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+
+.searchClear:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+/* ── loading skeletons ───────────────────────────────────────────────── */
+
+.skeletonGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.skeletonRow {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 8px;
+}
+
+.skeletonLine {
+  height: 10px;
+  border-radius: 5px;
+  background: linear-gradient(
+    90deg,
+    var(--dsw-alias-interactive-bg-hover) 25%,
+    var(--dsw-alias-bg-layer-1) 37%,
+    var(--dsw-alias-interactive-bg-hover) 63%
+  );
+  background-size: 400% 100%;
+  animation: prime-shimmer 1.4s ease infinite;
+}
+
+.skeletonTitle {
+  width: 38%;
+}
+
+.skeletonText {
+  width: 92%;
+}
+
+.skeletonTextShort {
+  width: 62%;
+}
+
+@keyframes prime-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+
+  100% {
+    background-position: -100% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeletonLine {
+    animation: none;
+  }
+}
+
 /* ── notices + empty states ──────────────────────────────────────────── */
 
 .notice,
@@ -712,10 +889,38 @@
   color: var(--dsw-alias-label-tertiary);
 }
 
+/* Icon-led empty state for settled-empty lists. */
+.emptyState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 24px 12px 20px;
+  text-align: center;
+}
+
+.emptyIcon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  margin-bottom: 6px;
+  border-radius: 999px;
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-secondary);
+}
+
 .emptyTitle {
   margin-bottom: 4px;
   color: var(--dsw-alias-label-secondary);
   font-weight: 500;
+}
+
+.emptyBody {
+  max-width: 260px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
 }
 
 /* ── heartbeat tab ────────────────────────────────────────────────────── */

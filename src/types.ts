@@ -25,6 +25,8 @@ export interface PrimeDelegation {
   cwd: string
   /** The underlying prime-agent session id once the log's session header arrived. */
   sessionId: string | null
+  /** The daemon active session id once the delegation is daemon-backed (null for subprocess delegations today). */
+  activeSessionId: string | null
   pid: number | null
   status: 'running' | 'exited' | 'failed' | 'stopped'
   startedAt: string
@@ -74,6 +76,7 @@ export interface PrimeState {
 /** Request for one background prime-agent JSON-mode session. */
 export interface PrimeDelegateRequest {
   task: string
+  briefing?: string
   cwd?: string
   model?: string
   provider?: string
@@ -86,6 +89,7 @@ export interface PrimeDelegateRequest {
   extensions?: string[]
   skills?: string[]
   appendSystemPrompt?: string[]
+  daemonBacked?: boolean
   autonomous?: boolean
   autonomousGates?: string[]
   autonomousMaxTurns?: number
@@ -94,6 +98,26 @@ export interface PrimeDelegateRequest {
   autonomousGateRetries?: number
   autonomousGateTimeoutMs?: number
   autonomousMaxContinuations?: number
+}
+
+/**
+ * One id resolved across every prime-agent identity namespace. Any action
+ * that takes a session/agent/delegation id accepts any id form and resolves
+ * it through this shape before use.
+ */
+export interface ResolvedIdentity {
+  /** The 8-char delegation record id, when the id matched an in-process delegation. */
+  delegationId: string | null
+  /** The daemon active session id, when the daemon roster matched. */
+  activeSessionId: string | null
+  /** The full session id (the `.jsonl` basename without extension). */
+  sessionId: string | null
+  /** The absolute `.jsonl` session file path, when one is known. */
+  sessionFile: string | null
+  /** The daemon session name, when the daemon roster matched. */
+  sessionName: string | null
+  /** Which namespace matched the input id. */
+  source: 'delegation' | 'agent' | 'session-file' | 'name'
 }
 
 /** Result of {@link PrimeOrchestration.stop}. */

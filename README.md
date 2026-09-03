@@ -48,12 +48,14 @@ The dsh-family packages are declared as peer dependencies with exact version cha
 
 ## Package layout
 
-One package, three mounted surfaces:
+One package, four mounted surfaces:
 
 | Surface | Mount | Content |
 | --- | --- | --- |
 | `exports "."` | bundle row `prime-orchestration` (from `cordis.patch.yml`) | host engine + preset materialization |
 | `exports "./agent-tool"` | preset composition row | `prime_agent` tool + prompt section + skill |
+| `exports "./cf-tools"` | preset composition row | `cf_ai_run` + `cf_ai_models` Workers AI tools |
+| `exports "./llm-cf-provider"` | bundle row `llm-cf-provider` (from `cordis.patch.yml`) | Workers AI LLM adapter on the host `llm` service |
 | `exports "./client"` (`dsh.client`) | browser roster (scanned from mounted entries) | fleet column + settings section |
 
 ### The layout override
@@ -65,11 +67,51 @@ The fleet column needs a fourth shell column (the `prime` slot, live across sess
 
 The browser module system registers one factory per module id (a second registration throws), so redirecting the entry URL — never a second registration — is the supported way to replace one browser plugin's implementation. No file inside the dsh installation is touched; uninstalling the package restores the stock three-column shell on the next page load. A future dsh that ships its own `prime` slot keeps working: the rewrite only swaps entries whose URL still points at `/plugins/...`.
 
+## Cloudflare Workers AI (cf-tools)
+
+The preset's `cf-tools` row mounts `dsh-prime-orchestrator/cf-tools`, a second agent-plane entry giving the model direct access to the account's Cloudflare Workers AI REST API. It registers two tools (and nothing else):
+
+- **`cf_ai_run`** — run one Workers AI model (`POST /accounts/{account}/ai/run/{model}`). `task` selects the input shape (text-generation, text-embeddings, image-generation, automatic-speech-recognition, text-to-speech, translation, summarization, image-to-text, text-classification, object-detection). JSON responses come back as parsed objects (text-generation `{ response, usage }`, embeddings `{ data, shape }`, other tasks their documented text fields). Binary outputs (images, audio) are written as `<model-slug>-<timestamp>.<ext>` into `outputDir` — relative to the session workspace, default the workspace root — and returned as `{ file, bytes, mediaType }`, so the model references the artifact path instead of raw bytes.
+- **`cf_ai_models`** — list/search the account's model catalog (`GET /accounts/{account}/ai/models/search`) with `query`, `author`, and `taskType` filters plus a `limit` (default 50, max 100). Returns `{ count, models: [{ id, name, taskType, description }] }` with descriptions truncated; if the response envelope differs from the documented one, the raw `result` keys are surfaced in the output instead of failing.
+
+Config keys (on the preset row):
+
+| key | default | meaning |
+| --- | --- | --- |
+| `accountId` | `CF_ACCOUNT_ID` env var | Cloudflare account id (config wins; missing → clear error) |
+| `tokenEnv` | `CLOUDFLARE_AI_TOKEN` | credential reference holding a Workers AI API token; resolved per request through the host `credentials` seam, never cached |
+| `timeoutMs` | `120000` | per-request fetch timeout, combined with the tool call's cancellation signal |
+
+Errors surface the HTTP status, the Cloudflare error code and message, and a stable reason per code: `5007` no such model, `3006` request too large, `3007`/`3008` timed out or aborted by the platform, `3036` free neuron allocation exhausted, `3040` out of capacity, `401`/`403` authentication, `429` rate limit (per-model limits: frontier models 20 req/min, text generation 300 req/min), `5xx` server error. Non-JSON error bodies fall back to status-only mapping (e.g. an empty-body `408` reads as a timeout).
+
+**Model experience.** The model sees `cf_ai_run`/`cf_ai_models` as ordinary tools: JSON results verbatim, binary results as an artifact path (never raw bytes in the conversation), the model catalog as a compact markdown table, and all rendered output bounded to ~12k characters with a truncation marker. Every `cf_ai_run` call costs neurons against the account allocation — 10,000 per day on the free Workers plan; once exhausted, Cloudflare returns code `3036` until the window resets or the account upgrades to Workers Paid.
+
+## Cloudflare Workers AI as a harness LLM provider (llm-cf-provider)
+
+The bundle's second host row (`llm-cf-provider` in `cordis.patch.yml`) mounts `dsh-prime-orchestrator/llm-cf-provider`, a host-plane LLM adapter that registers on the host `llm` service under the provider route **`cf-workers-ai-native`**. It streams OpenAI-compatible chat completions directly from `https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/v1/chat/completions` over `fetch` + SSE — no pi-ai SDK layer — and translates chunks into the harness `StreamChunk` protocol.
+
+Config keys (on the host row):
+
+| key | default | meaning |
+| --- | --- | --- |
+| `accountId` | `CF_ACCOUNT_ID` env var | Cloudflare account id (config wins; missing → clear error naming both) |
+| `tokenEnv` | `CLOUDFLARE_AI_TOKEN` | credential reference holding a Workers AI API token; resolved per request through the host `credentials` seam, never cached |
+| `timeoutMs` | `120000` | per-request timeout, combined with the caller's cancellation signal |
+| `streamIdleTimeoutMs` | `300000` | maximum provider silence while one stream read is outstanding (per-read idle watchdog) |
+| `retryPolicy` | normal defaults | provider-owned retry policy (`RetryPolicySchema` from dsh-llm) |
+| `models` | curated catalog below | advisory model catalog (`{ id, name?, contextWindow?, maxTokens? }`) |
+
+Default catalog (advisory; any Workers AI model id is routable): `@cf/deepseek-ai/deepseek-v4-flash-0731` and `@cf/deepseek-ai/deepseek-v4-pro-0813` (131072 context / 16384 output), `@cf/zai-org/glm-5.2`, `@cf/zai-org/glm-5.3`, `@cf/moonshotai/kimi-k2.7-code`, `@cf/qwen/qwen3.8-27b` (262144 / 16384), and `@cf/meta/llama-3.3-70b-instruct-fp8-fast` (131072 / 16384).
+
+Failures map to the stable harness `LlmError` codes: HTTP `401`/`403` or bad token → `AUTH`; `429`, CF `3036` (free neuron allocation exhausted — 10k/day on the free plan), and CF `3040` (out of capacity) → `RATE_LIMIT`; HTTP `408` and CF `3007`/`3008` (platform timeout/abort) → `TIMEOUT` — the class llm-retry treats as retryable; `400` and CF `5007` (no such model) → `INVALID_REQUEST`; `5xx` → `SERVER`. An empty body on `408` reads as `TIMEOUT`; a missing response body reads as `EMPTY_RESPONSE`; a truncated SSE stream (EOF before `[DONE]`) reads as `STREAM_CLOSED`. Status, `retry-after`, and the `cf-ray` request id are attached to the error where present.
+
+**Model experience.** Streamed text, reasoning (DeepSeek V4 `reasoning_content` becomes a `reasoning` block), and tool calls (argument fragments concatenate into the raw JSON string end-to-end) all flow as incremental deltas; usage arrives before the terminal finish (from the trailing OpenAI usage chunk when present, otherwise from the `cf-ai-usage` response header); a degenerate empty completion surfaces as an `EMPTY_RESPONSE` error finish instead of a silent empty message; timeouts are retried by the harness retry layer via the `TIMEOUT` code.
+
 ## Development
 
 ```sh
 pnpm install
-pnpm run build      # lib/index.js, lib/agent-tool.js, lib/client.js
+pnpm run build      # lib/index.js, lib/agent-tool.js, lib/cf-tools.js, lib/llm-cf-provider.js, lib/client.js
 pnpm run typecheck
 ```
 

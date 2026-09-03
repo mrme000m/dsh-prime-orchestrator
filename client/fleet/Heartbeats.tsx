@@ -8,11 +8,12 @@
 import { useState } from 'react'
 import clsx from 'clsx'
 import {
-  Button, IconSendOutline16, StateDot,
+  Button, IconRefreshOutline16, IconSendOutline16, StateDot,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PrimeAgent, PrimeApi, PrimeHeartbeat, PrimeHeartbeatSetInput } from './api.ts'
 import type { PrimePanelProps } from './PrimePanel.tsx'
 import { untilOf } from './store.ts'
+import { EmptyState, SkeletonRows } from './States.tsx'
 import css from './PrimePanel.module.css'
 
 /** The set form's delivery/source choices (presented as two-row radio pairs). */
@@ -123,10 +124,16 @@ export function Heartbeats(props: HeartbeatsProps) {
       {error !== undefined
         ? <p className={css.globalError}>{t('heartbeats.failed', { message: error })}</p>
         : jobs === undefined
-          ? <div className={css.empty}>{t('heartbeats.loading')}</div>
+          ? <SkeletonRows rows={3} label={t('loading.label')} />
           : (
             <>
-              {jobs.length === 0 && <div className={css.empty}>{t('heartbeats.empty')}</div>}
+              {jobs.length === 0 && (
+                <EmptyState
+                  icon={<IconRefreshOutline16 size={18} />}
+                  title={t('heartbeats.empty.title')}
+                  body={t('heartbeats.empty.body')}
+                />
+              )}
               {jobs.map((job) => {
                 const actions = rowActionsOf(job.source, job.status)
                 const toggle = actions.toggle

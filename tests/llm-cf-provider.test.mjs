@@ -224,6 +224,26 @@ test('translate maps text, reasoning, tool-call deltas; usage precedes finish; n
   assert.deepEqual(chunks[finishIdx].reason, { kind: 'tool-calls' })
 })
 
+test('translate keeps id/name when continuation deltas re-send them empty', async () => {
+  // Workers AI's openai-completions stream re-sends id and function.name as
+  // EMPTY STRINGS on continuation deltas; the first delta alone carries the
+  // real values. Accepting the empties clobbered the call into `unknown tool ""`.
+  const chunks = await collect(translate(ofPayloads([
+    '{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-77","type":"function","function":{"name":"bash","arguments":"{\\"command\\":"}}]}}]}',
+    '{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"","type":"function","function":{"name":"","arguments":"\\"pwd\\"}"}}]}}]}',
+    '{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+    '[DONE]',
+  ])))
+  const deltas = chunks.filter((c) => c.type === 'tool-call-delta')
+  assert.equal(deltas[0].id, 'call-77')
+  assert.equal(deltas[1].id, 'call-77')
+  assert.equal(deltas[1].name, 'bash')
+  const end = chunks.find((c) => c.type === 'block-end')
+  assert.equal(end.block.id, 'call-77')
+  assert.equal(end.block.name, 'bash')
+  assert.equal(end.block.arguments, '{"command":"pwd"}')
+})
+
 test('translate maps stop/length finish reasons and empty completions', async () => {
   const stop = await collect(translate(ofPayloads([
     '{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}',

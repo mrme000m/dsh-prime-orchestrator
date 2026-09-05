@@ -1,3 +1,3 @@
 name: Prime 编排
-description: 完整编码 Agent 加 Prime Agent 编排：把意图展开为受跟踪目标，委托并管理 prime-agent 会话执行，附带 Web 端舰队侧栏与设置分区。
+description: 创造模式（cordis）+ Prime Agent 编排：完整编码 Agent、运行时自改（cordis_mount 与插件实验）、把意图展开为受跟踪目标，委托并管理 prime-agent 会话执行，附带 Web 端舰队侧栏与设置分区。
 order: 2

@@ -1,5 +1,6 @@
-# The `prime-orchestrator` agent preset: the full coding agent plus Prime
-# Agent orchestration, derived from `standard`. Mounted once per process.
+# The `prime-orchestrator` agent preset: Creator Mode (`cordis`) plus Prime
+# Agent orchestration — the full coding agent, runtime self-modification, and
+# delegation to prime-agent workers. Mounted once per process.
 #
 # This file is an AGENT-PLANE composition. The roster mounts it ONCE under a
 # standing scope; every session naming it joins by scope parentage, so the
@@ -85,6 +86,9 @@
 # carries whatever the deployment registered globally (repository plugins).
 - id: skill-filesystem
   name: '@deepseek-ai/dsh-skill-filesystem'
+  config:
+    customSkillDirs:
+      - !!js "process.getBuiltinModule('node:url').fileURLToPath(new URL('skills/', baseUrl))"
 
 - id: tool-skill
   name: '@deepseek-ai/dsh-tool-skill'
@@ -252,6 +256,21 @@
   config:
     fetch: false
     searchTimeoutMs: 60000
+
+# ── self-modification (cloned from Creator Mode / `cordis`) ────────────────
+
+# Read the live runtime, mount a temporary plugin, unmount it — so the
+# orchestrator can compose, adjust, and repair agent presets and host
+# plugins, including its own. The toolset is a trust boundary, not a
+# sandbox; a session on this preset is shell-equivalent, which the
+# prime-agent delegation mandate already assumes (delegated workers run
+# with the user's full permissions).
+- id: tool-cordis
+  name: '@deepseek-ai/dsh-tool-cordis'
+
+# The editing-cordis-compositions and cordis-plugin-development skills load
+# through the `skill-filesystem` row above (this preset's own skills/
+# directory sits in its customSkillDirs); see the skills section.
 
 # Cloudflare Workers AI: the model-facing `cf_ai_run`/`cf_ai_models` tools from
 # this bundle's `./cf-tools` subpath export. Like `tool-bash`, the row only

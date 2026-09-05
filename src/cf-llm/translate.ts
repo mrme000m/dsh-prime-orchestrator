@@ -164,8 +164,12 @@ export async function* translate(
           toolBlocks.set(call.index, block)
           yield { type: 'block-start', index: block.index, blockType: 'tool-call' }
         }
-        if (call.id !== undefined) block.callId = call.id
-        if (call.function?.name !== undefined) block.name = call.function.name
+        // Only the first delta of a call carries id/name; continuation
+        // deltas from Workers AI's openai-completions stream carry them as
+        // EMPTY STRINGS, not omitted — accepting those would clobber the
+        // real values and dispatch the call as an unknown tool.
+        if (call.id) block.callId = call.id
+        if (call.function?.name) block.name = call.function.name
         const fragment = call.function?.arguments ?? ''
         block.text += fragment
         yield {

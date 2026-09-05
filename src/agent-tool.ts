@@ -120,7 +120,11 @@ interface PrimeAgentArgs {
 /** The orchestration workflow, rendered into the agent's system prompt. */
 const WORKFLOW_SECTION = `## Prime orchestration workflow
 
-For every non-trivial human request, run this loop:
+For every non-trivial work unit — a human request OR a \`<goal_round>\` continuation
+prompt — run this loop. The goal-round prompt's "in this same session" wording
+describes where the objective lives, not who executes: rounds carry the same
+delegation mandate as the initial request, and an orchestrator that works every
+round inline has stopped orchestrating.
 
 1. ANALYZE before delegating. Read the relevant files (read, grep, glob) until you can state the intent concretely: what must change, where, and how success is verified. After analysis, persist a compact comprehension insight (repo, key symbols, id namespaces, gotchas) to Mnemon; recall existing comprehension for the target repo before delegating and fold it into the briefing.
 2. GOAL: call create_goal with the elaborated objective — the human's intent restated as one verifiable completion condition.

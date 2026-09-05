@@ -155,21 +155,44 @@ test('cf_ai_run maps a 5007 envelope to an error naming the model', async (t) =>
 test('cf_ai_run maps an empty-body 408 to a timeout message', async (t) => {
   const { ctx, registered } = makeContext()
   apply(ctx, CONFIG)
-  t.mock.method(globalThis, 'fetch', async () => new Response(null, { status: 408 }))
-  await assert.rejects(
-    registered[0].execute(RUN_ARGS, execContext()),
-    (err) => {
-      assert.match(err.message, /HTTP 408/)
-      assert.match(err.message, /timed out/)
-      return true
-    },
-  )
+  let callCount = 0
+  t.mock.method(globalThis, 'fetch', async () => {
+    callCount++
+    return new Response(null, { status: 408 })
+  })
+  // Compress long retry delays so the 408 retry chain resolves quickly.
+  const realSetTimeout = setTimeout
+  globalThis.setTimeout = (fn, ms) => realSetTimeout(fn, typeof ms === 'number' && ms > 100 ? 1 : ms)
+  try {
+    await assert.rejects(
+      registered[0].execute(RUN_ARGS, execContext()),
+      (err) => {
+        assert.match(err.message, /HTTP 408/)
+        assert.match(err.message, /timed out/)
+        // With retry logic, fetch is called multiple times (initial + 3 retries = 4)
+        assert.ok(callCount >= 3, `fetch should be called multiple times due to retry, got ${callCount}`)
+        return true
+      },
+    )
+  } finally {
+    globalThis.setTimeout = realSetTimeout
+  }
 })
 
 test('cf_ai_run maps a 429 to a rate-limit error naming per-model limits', async (t) => {
   const { ctx, registered } = makeContext()
   apply(ctx, CONFIG)
-  t.mock.method(globalThis, 'fetch', async () => new Response(null, { status: 429 }))
+  let callCount = 0
+  t.mock.method(globalThis, 'fetch', async () => {
+    callCount++
+    return new Response(null, { status: 429 })
+  })
+  // Compress long retry delays (t.mock.method restores the original after the test).
+  const realSetTimeout = setTimeout
+  t.mock.method(globalThis, 'setTimeout', (fn, ms) => {
+    if (typeof ms === 'number' && ms > 100) return realSetTimeout(fn, 1)
+    return realSetTimeout(fn, ms)
+  })
   await assert.rejects(
     registered[0].execute(RUN_ARGS, execContext()),
     (err) => {
@@ -177,6 +200,8 @@ test('cf_ai_run maps a 429 to a rate-limit error naming per-model limits', async
       assert.match(err.message, /rate limit/)
       assert.match(err.message, /20 req\/min/)
       assert.match(err.message, /300 req\/min/)
+      // With retry logic, fetch is called multiple times
+      assert.ok(callCount >= 3, `fetch should be called multiple times due to retry, got ${callCount}`)
       return true
     },
   )

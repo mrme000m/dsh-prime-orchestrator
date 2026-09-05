@@ -49,6 +49,110 @@ const MODELS_PAGE_MAX = 100
 /** Default and maximum row count for `cf_ai_models`. */
 const MODELS_LIMIT_DEFAULT = 50
 
+/** Retry configuration for transient failures. */
+interface RetryConfig {
+  /** Maximum number of retry attempts. */
+  maxRetries: number
+  /** Initial delay in milliseconds. */
+  initialDelayMs: number
+  /** Maximum delay in milliseconds. */
+  maxDelayMs: number
+  /** Exponential backoff multiplier. */
+  backoffMultiplier: number
+  /** Jitter ratio (0-1). */
+  jitterRatio: number
+}
+
+/** Default retry config: 3 retries, 5s initial delay, 60s max, exponential backoff. */
+const DEFAULT_RETRY_CONFIG: RetryConfig = {
+  maxRetries: 3,
+  initialDelayMs: 5_000,
+  maxDelayMs: 60_000,
+  backoffMultiplier: 2,
+  jitterRatio: 0.1,
+}
+
+/** HTTP status codes that are retryable. */
+const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504])
+
+/** Cloudflare error codes that are retryable. */
+const RETRYABLE_CF_CODES = new Set([3007, 3008, 3036, 3040])
+
+/** Check if an error is retryable based on status and CF error code. */
+function isRetryableError(status: number, cfCode: number | undefined): boolean {
+  if (RETRYABLE_STATUS_CODES.has(status)) return true
+  if (cfCode !== undefined && RETRYABLE_CF_CODES.has(cfCode)) return true
+  return false
+}
+
+/** Sleep for the given milliseconds. */
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+/** Execute a fetch with retry logic for transient failures. */
+async function fetchWithRetry<T>(
+  fetchFn: () => Promise<Response>,
+  parseFn: (res: Response) => Promise<T>,
+  tool: string,
+  endpoint: string,
+  timeoutMs: number,
+  retryConfig: RetryConfig = DEFAULT_RETRY_CONFIG,
+  errorContext: Pick<CfErrorContext, 'model'> = {},
+): Promise<T> {
+  let lastError: Error | undefined
+  let delay = retryConfig.initialDelayMs
+  for (let attempt = 0; attempt <= retryConfig.maxRetries; attempt++) {
+    let res: Response
+    try {
+      res = await fetchFn()
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err))
+      // Network errors (timeout, abort) are retryable
+      if (attempt < retryConfig.maxRetries) {
+        await sleep(delay)
+        delay = Math.min(
+          delay * retryConfig.backoffMultiplier * (1 + Math.random() * retryConfig.jitterRatio),
+          retryConfig.maxDelayMs,
+        )
+        continue
+      }
+      throw wrapNetworkError(err, tool, endpoint, timeoutMs)
+    }
+
+    if (res.ok) {
+      return parseFn(res)
+    }
+
+    // Read error body for CF error code
+    const text = await res.text()
+    let envelope: unknown
+    try {
+      envelope = JSON.parse(text)
+    } catch {
+      envelope = undefined
+    }
+    const cfCode = isRecord(envelope) && Array.isArray(envelope.errors)
+      ? envelope.errors.find((e): e is Record<string, unknown> => isRecord(e))?.code as number | undefined
+      : undefined
+
+    lastError = mapCfError(res.status, envelopeErrors(envelope), { tool, endpoint, ...errorContext })
+
+    if (attempt < retryConfig.maxRetries && isRetryableError(res.status, cfCode)) {
+      await sleep(delay)
+      delay = Math.min(
+        delay * retryConfig.backoffMultiplier * (1 + Math.random() * retryConfig.jitterRatio),
+        retryConfig.maxDelayMs,
+      )
+      continue
+    }
+
+    throw lastError
+  }
+
+  throw lastError ?? new Error(`${tool} ${endpoint}: failed after ${retryConfig.maxRetries} retries`)
+}
+
 /** The task types Workers AI routes models by. */
 const CF_TASKS = [
   'text-generation', 'text-embeddings', 'image-generation',
@@ -455,58 +559,56 @@ export function apply(ctx: Context, config: Config): void {
       const accountId = resolveAccount()
       const token = await resolveToken()
       const endpoint = buildRunUrl(accountId, a.model)
-      let res: Response
-      try {
-        res = await fetch(endpoint, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify(a.input),
-          signal: requestSignal(exec, timeoutMs),
-        })
-      } catch (err) {
-        throw wrapNetworkError(err, 'cf_ai_run', endpoint, timeoutMs)
-      }
 
-      if (!res.ok) {
-        const text = await res.text()
-        let envelope: unknown
-        try {
-          envelope = JSON.parse(text)
-        } catch {
-          envelope = undefined
-        }
-        throw mapCfError(res.status, envelopeErrors(envelope), { tool: 'cf_ai_run', endpoint, model: a.model })
-      }
+      const result = await fetchWithRetry(
+        async () => {
+          const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify(a.input),
+            signal: requestSignal(exec, timeoutMs),
+          })
+          return res
+        },
+        async (res) => {
+          const mediaType = (res.headers.get('content-type') ?? '').split(';', 1)[0].trim().toLowerCase()
+          if (isBinaryMediaType(mediaType)) {
+            const bytes = new Uint8Array(await res.arrayBuffer())
+            const root = workspaceRoot(exec)
+            const dir = a.outputDir !== undefined ? resolvePath(root, a.outputDir) : root
+            await mkdir(dir, { recursive: true })
+            const file = join(dir, `${modelSlug(a.model)}-${Date.now()}.${binaryExtension(mediaType)}`)
+            await writeFile(file, bytes)
+            return { file, bytes: bytes.byteLength, mediaType } as JsonValue
+          }
 
-      const mediaType = (res.headers.get('content-type') ?? '').split(';', 1)[0].trim().toLowerCase()
-      if (isBinaryMediaType(mediaType)) {
-        const bytes = new Uint8Array(await res.arrayBuffer())
-        const root = workspaceRoot(exec)
-        const dir = a.outputDir !== undefined ? resolvePath(root, a.outputDir) : root
-        await mkdir(dir, { recursive: true })
-        const file = join(dir, `${modelSlug(a.model)}-${Date.now()}.${binaryExtension(mediaType)}`)
-        await writeFile(file, bytes)
-        return { file, bytes: bytes.byteLength, mediaType } as JsonValue
-      }
+          const text = await res.text()
+          let parsed: unknown
+          try {
+            parsed = JSON.parse(text)
+          } catch {
+            return { mediaType, text: bounded(text, 2_000) } as JsonValue
+          }
+          if (isRecord(parsed) && parsed.success === false) {
+            throw mapCfError(res.status, envelopeErrors(parsed), { tool: 'cf_ai_run', endpoint, model: a.model })
+          }
+          // Workers AI wraps the model output in `result` for successful run calls;
+          // unwrap so the model sees the documented task shapes ({ response },
+          // { data, shape }, …). Envelopes without an object result pass through.
+          if (isRecord(parsed) && isRecord(parsed.result)) {
+            return parsed.result as JsonValue
+          }
+          // JSON.parse output is by construction JSON-serializable.
+          return parsed as JsonValue
+        },
+        'cf_ai_run',
+        endpoint,
+        timeoutMs,
+        DEFAULT_RETRY_CONFIG,
+        { model: a.model },
+      )
 
-      const text = await res.text()
-      let parsed: unknown
-      try {
-        parsed = JSON.parse(text)
-      } catch {
-        return { mediaType, text: bounded(text, 2_000) } as JsonValue
-      }
-      if (isRecord(parsed) && parsed.success === false) {
-        throw mapCfError(res.status, envelopeErrors(parsed), { tool: 'cf_ai_run', endpoint, model: a.model })
-      }
-      // Workers AI wraps the model output in `result` for successful run calls;
-      // unwrap so the model sees the documented task shapes ({ response },
-      // { data, shape }, …). Envelopes without an object result pass through.
-      if (isRecord(parsed) && isRecord(parsed.result)) {
-        return parsed.result as JsonValue
-      }
-      // JSON.parse output is by construction JSON-serializable.
-      return parsed as JsonValue
+      return result
     },
   }))
 
@@ -529,46 +631,52 @@ export function apply(ctx: Context, config: Config): void {
       const accountId = resolveAccount()
       const token = await resolveToken()
       const endpoint = buildModelsUrl(accountId, { query: a.query, author: a.author, taskType: a.taskType, perPage: limit })
-      let res: Response
-      try {
-        res = await fetch(endpoint, {
-          method: 'GET',
-          headers: { Authorization: `Bearer ${token}` },
-          signal: requestSignal(exec, timeoutMs),
-        })
-      } catch (err) {
-        throw wrapNetworkError(err, 'cf_ai_models', endpoint, timeoutMs)
-      }
 
-      const text = await res.text()
-      let parsed: unknown
-      try {
-        parsed = JSON.parse(text)
-      } catch {
-        throw mapCfError(res.status, undefined, { tool: 'cf_ai_models', endpoint })
-      }
-      if (!res.ok || (isRecord(parsed) && parsed.success === false)) {
-        throw mapCfError(res.status, envelopeErrors(parsed), { tool: 'cf_ai_models', endpoint })
-      }
+      const result = await fetchWithRetry(
+        async () => {
+          return fetch(endpoint, {
+            method: 'GET',
+            headers: { Authorization: `Bearer ${token}` },
+            signal: requestSignal(exec, timeoutMs),
+          })
+        },
+        async (res) => {
+          const text = await res.text()
+          let parsed: unknown
+          try {
+            parsed = JSON.parse(text)
+          } catch {
+            throw mapCfError(res.status, undefined, { tool: 'cf_ai_models', endpoint })
+          }
+          if (!res.ok || (isRecord(parsed) && parsed.success === false)) {
+            throw mapCfError(res.status, envelopeErrors(parsed), { tool: 'cf_ai_models', endpoint })
+          }
 
-      const result = isRecord(parsed) ? parsed.result : undefined
-      let rows: unknown[]
-      let note: string | undefined
-      if (isRecord(result) && Array.isArray(result.models)) {
-        rows = result.models
-      } else if (Array.isArray(result)) {
-        rows = result
-      } else {
-        rows = []
-        note = `unexpected response envelope: result keys ${JSON.stringify(isRecord(result) ? Object.keys(result) : typeof result)}`
-      }
-      const models = rows.filter(isRecord).slice(0, limit).map((row) => ({
-        id: typeof row.id === 'string' ? row.id : '',
-        name: typeof row.name === 'string' ? row.name : '',
-        taskType: typeof row.task_type === 'string' ? row.task_type : typeof row.taskType === 'string' ? row.taskType : '',
-        description: truncate(typeof row.description === 'string' ? row.description : '', MODEL_DESCRIPTION_LIMIT),
-      }))
-      return { count: models.length, models, ...(note !== undefined ? { note } : {}) } as JsonValue
+          const result = isRecord(parsed) ? parsed.result : undefined
+          let rows: unknown[]
+          let note: string | undefined
+          if (isRecord(result) && Array.isArray(result.models)) {
+            rows = result.models
+          } else if (Array.isArray(result)) {
+            rows = result
+          } else {
+            rows = []
+            note = `unexpected response envelope: result keys ${JSON.stringify(isRecord(result) ? Object.keys(result) : typeof result)}`
+          }
+          const models = rows.filter(isRecord).slice(0, limit).map((row) => ({
+            id: typeof row.id === 'string' ? row.id : '',
+            name: typeof row.name === 'string' ? row.name : '',
+            taskType: typeof row.task_type === 'string' ? row.task_type : typeof row.taskType === 'string' ? row.taskType : '',
+            description: truncate(typeof row.description === 'string' ? row.description : '', MODEL_DESCRIPTION_LIMIT),
+          }))
+          return { count: models.length, models, ...(note !== undefined ? { note } : {}) } as JsonValue
+        },
+        'cf_ai_models',
+        endpoint,
+        timeoutMs,
+      )
+
+      return result
     },
   }))
 }

@@ -16,6 +16,14 @@ export interface PrimeConfig {
   defaultGoalTokenBudget: number
   defaultAutonomous: boolean
   defaultAutonomousMaxContinuations: number
+  /** Question watchdog: auto-answer pending ask_user_question after a timeout. */
+  questionWatchdogEnabled: boolean
+  /** Question watchdog timeout in ms (settings 0 folds to the 15-minute default). */
+  questionWatchdogTimeoutMs: number
+  /** Question watchdog auto-answer strategy. */
+  questionWatchdogStrategy: 'recommended' | 'first' | 'cancel'
+  /** macOS notifications on new pending questions and auto-actions. */
+  questionNotifyEnabled: boolean
 }
 
 /** Public view of one delegation (no live process handles). */

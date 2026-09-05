@@ -6,7 +6,7 @@ It turns a dsh agent into an orchestrator over [Prime Agent](https://pypi.org/pr
 
 - **Host engine** (`ctx.prime`): the shared delegation table, one-shot CLI runs, the protocol-7 daemon socket client, the `/prime` JSON API, and the `prime-orchestrator` settings namespace.
 - **Model-facing surface**: the `prime_agent` tool (delegate, monitor, steer, coordinate, set and manage persistent goals, heartbeats, prompt running sessions, read transcripts, inspect and manage recursive subagents, switch models mid-session, control queue and recursion depth, fork branches, export transcripts, and manage prime-agent sessions), the `prime-orchestrator:workflow` prompt section, and the bundled `prime-agent` skill.
-- **Web UI**: the Prime fleet column (right side of the Web GUI, toggle at the sidebar foot) with live delegation/session/event streams, and the Settings → Prime Orchestration section. Drill into any running prime-agent session for its live transcript, a prompt box (text or slash commands), turn controls (abort, queue, goal, model switch), and the `prime-agent attach` command to take it over in a TUI — the web view and the TUI share the same daemon session.
+- **Web UI**: the Prime fleet column (right side of the Web GUI, toggle at the sidebar foot) with live delegation/session/event streams, and the Settings → Prime Orchestration section — both rendered by the harness core's `@deepseek-ai/dsh-client-ui-prime` / `@deepseek-ai/dsh-client-ui-prime-settings`; this package's browser half is the pending-questions banner. Drill into any running prime-agent session for its live transcript, a prompt box (text or slash commands), turn controls (abort, queue, goal, model switch), and the `prime-agent attach` command to take it over in a TUI — the web view and the TUI share the same daemon session.
 - **Agent preset**: `prime-orchestrator` — the full coding agent plus the orchestration surface, derived from `standard`. Sessions can pick it from the preset picker.
 
 ## Install
@@ -56,7 +56,7 @@ One package, four mounted surfaces:
 | `exports "./agent-tool"` | preset composition row | `prime_agent` tool + prompt section + skill |
 | `exports "./cf-tools"` | preset composition row | `cf_ai_run` + `cf_ai_models` Workers AI tools |
 | `exports "./llm-cf-provider"` | bundle row `llm-cf-provider` (from `cordis.patch.yml`) | Workers AI LLM adapter on the host `llm` service |
-| `exports "./client"` (`dsh.client`) | browser roster (scanned from mounted entries) | fleet column + settings section |
+| `exports "./client"` (`dsh.client`) | browser roster (scanned from mounted entries) | pending-questions banner (`shell.overlay`) — the fleet column and settings section moved to the harness core (`@deepseek-ai/dsh-client-ui-prime`, `@deepseek-ai/dsh-client-ui-prime-settings`) |
 
 ### The layout override
 

@@ -1,71 +1,62 @@
 /**
- * dsh-prime-orchestrator — browser half: the Settings → Prime Orchestration
- * section. The Prime fleet column and sidebar-foot trigger live in the harness
- * core's `@deepseek-ai/dsh-client-ui-prime` package, which owns the `prime`
- * locale namespace and the `prime` layout slot; this plugin must not duplicate
- * either.
- *
- * The settings section registers through `ctx.inject` on the settings shell's
- * scope service, so a composition without the settings UI skips the section
- * without stalling.
+ * dsh-prime-orchestrator — browser half: the pending-questions banner. The
+ * Prime fleet column, sidebar-foot trigger, and the Settings → Prime
+ * Orchestration section live in the harness core's `@deepseek-ai/dsh-client-ui-prime`
+ * and `@deepseek-ai/dsh-client-ui-prime-settings` packages, which own the
+ * `prime` and `settings.primeOrchestration` locale namespaces; this plugin
+ * must not duplicate any of them.
  *
  * @module dsh-prime-orchestrator/client
  */
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 // Type-only: pulls the locale plugin's Context merge (ctx.locale).
 import type {} from '@deepseek-ai/dsh-client-locale/client'
-// Type-only: pulls the settings shell's SlotMap merge ('settings.section') and ctx.settingsScope.
-import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
-// Type-only: pulls the ctx.remote/ctx.connection merges the scope binder needs.
-import type {} from '@deepseek-ai/dsh-api-remotes/client'
-import { PrimeOrchestrationSection } from './settings/PrimeOrchestrationSection.tsx'
-import {
-  PRIME_SETTINGS_NS, PrimeOrchestrationController, type PrimeOrchestrationSectionInjected,
-} from './settings/section-store.ts'
-import { en as settingsEn, zh as settingsZh, type PrimeOrchestrationKey } from './settings/locales.ts'
+import { PendingQuestionsBadge, type PendingQuestionsInjected } from './questions/PendingQuestionsBadge.tsx'
+import { en as questionsEn, zh as questionsZh } from './questions/locales.ts'
 
-declare module '@deepseek-ai/dsh-client-ui-slots' {
-  interface LocaleNamespaceMap {
-    /** Prime-orchestration settings section copy. */
-    'settings.primeOrchestration': PrimeOrchestrationKey
-  }
-}
+/** Dictionary namespace owned by the pending-questions banner. */
+const QUESTIONS_NS = 'primeQuestions'
 
-/** Dictionary namespace owned by this plugin. */
-const SETTINGS_NS = 'settings.primeOrchestration'
-
-/** Required service: copy for the settings dictionaries. */
+/** Required services: copy for the banner dictionaries. */
 export const inject = ['locale']
 
 /**
- * Client plugin body: dictionaries always; the settings section once the
- * settings shell's scope service appears.
+ * Client plugin body: dictionaries always; the pending-questions banner once
+ * the slots service appears (guarded — the stock three-column layout has no
+ * `shell.overlay` seat and must boot without it).
  * @param ctx - client root context.
  */
 export function apply(ctx: ClientContext): void {
-  ctx.effect(() => ctx.locale.register(SETTINGS_NS, { zh: settingsZh, en: settingsEn }), 'prime-orchestrator: settings dictionaries')
+  ctx.effect(() => ctx.locale.register(QUESTIONS_NS, { zh: questionsZh, en: questionsEn }), 'prime-orchestrator: question banner dictionaries')
 
-  // Scoped registration: a composition without the settings UI (or without
-  // the remote/connection services backing the scope binder) carries no section.
-  ctx.inject(['settingsScope', 'remote', 'connection'], (scoped: ClientContext) => {
-    const controller = new PrimeOrchestrationController(
-      scoped.settingsScope.bind({ namespace: PRIME_SETTINGS_NS }),
-    )
-
-    const sectionInjected = (): PrimeOrchestrationSectionInjected => ({
-      hooks: { primeSettings: controller.store },
-      setDraft: controller.setDraft.bind(controller),
-      reset: () => controller.reset(),
-      save: () => controller.save(),
-    })
-
-    scoped.effect(() => scoped.slots.inject('settings.section', () => scoped.slots.register({
-      name: 'settings.section',
-      id: 'prime-orchestration',
-      order: 30,
-      label: () => scoped.locale.bind(SETTINGS_NS)('nav'),
-      locale: SETTINGS_NS,
-      inject: sectionInjected,
-    }, PrimeOrchestrationSection)), 'prime-orchestrator: settings section')
+  // Pending-questions banner: the safety net for ask_user_question delivery.
+  // It polls /prime/api/questions over plain HTTP (immune to the dead event
+  // socket that loses composer takeovers) and answers inline.
+  ctx.inject(['slots', 'locale'], (scoped: ClientContext) => {
+    scoped.effect(() => {
+      try {
+        return scoped.slots.inject('shell.overlay', () => scoped.slots.register({
+          name: 'shell.overlay',
+          id: 'prime-questions',
+          order: 10,
+          locale: QUESTIONS_NS,
+          inject: (): PendingQuestionsInjected => ({
+            openSession: (sessionId: string): void => {
+              // The sessions service is not in this plugin's inject list; the
+              // host context carries it when the session surface is composed.
+              // Named cast (not inline): the probe is structural by design.
+              const host = scoped as unknown as { sessions?: { open(id: string): void } }
+              host.sessions?.open(sessionId)
+            },
+          }),
+        }, PendingQuestionsBadge))
+      } catch (error) {
+        // The stock three-column layout declares no shell.overlay seat; the
+        // watchdog (host side) still covers auto-answer without the banner.
+        console.warn('[prime-orchestrator] shell.overlay slot absent — pending-questions banner disabled:',
+          error instanceof Error ? error.message : String(error))
+        return () => {}
+      }
+    }, 'prime-orchestrator: pending-questions banner')
   })
 }

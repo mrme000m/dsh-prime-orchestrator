@@ -103,6 +103,7 @@ export default defineConfig([
       'agent-tool': 'src/agent-tool.ts',
       'cf-tools': 'src/cf-tools.ts',
       'bw-tools': 'src/bw-tools.ts',
+      'wt-tools': 'src/wt-tools.ts',
       'llm-cf-provider': 'src/llm-cf-provider.ts',
     },
     outDir: 'lib',

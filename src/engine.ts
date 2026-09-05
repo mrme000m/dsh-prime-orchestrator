@@ -41,6 +41,12 @@ import type {
   PrimeStopResult,
   ResolvedIdentity,
 } from './types.ts'
+import {
+  DEFAULT_QUESTION_WATCHDOG_TIMEOUT_MS,
+  QUESTION_WATCHDOG_STRATEGIES,
+  QuestionWatchdog,
+} from './question-watchdog.ts'
+import type { QuestionWatchdogStrategy, WatchdogAnswerItem } from './question-watchdog.ts'
 
 export type {
   PrimeAction,
@@ -97,6 +103,10 @@ interface PrimeSettings {
   delegateGoalTokenBudget: number
   delegateAutonomous: boolean
   delegateAutonomousMaxContinuations: number
+  questionWatchdogEnabled: boolean
+  questionWatchdogTimeoutMs: number
+  questionWatchdogStrategy: string
+  questionNotifyEnabled: boolean
 }
 
 /** Internal delegation record: the public view plus live handles and buffers. */
@@ -1544,6 +1554,10 @@ const PrimeSettingsSchema: z<PrimeSettings> = z.object({
   delegateGoalTokenBudget: z.number().default(0),
   delegateAutonomous: z.boolean().default(false),
   delegateAutonomousMaxContinuations: z.number().default(0),
+  questionWatchdogEnabled: z.boolean().default(true),
+  questionWatchdogTimeoutMs: z.number().default(0),
+  questionWatchdogStrategy: z.string().default(''),
+  questionNotifyEnabled: z.boolean().default(true),
 })
 
 /** Sync spawn failure carrying the failed delegation view for the web handler. */
@@ -1597,6 +1611,20 @@ function sendJson(res: ServerResponse, status: number, value: unknown): void {
 }
 
 /**
+ * Watchdog timeout resolution: the PRIME_ORCHESTRATOR_QUESTION_TIMEOUT_MS env
+ * var (test/ops override, highest precedence) beats a positive settings value,
+ * and 0/unset folds to the 15-minute default.
+ */
+function resolveQuestionWatchdogTimeoutMs(configured: number): number {
+  const raw = process.env.PRIME_ORCHESTRATOR_QUESTION_TIMEOUT_MS
+  if (raw !== undefined && raw !== '') {
+    const env = Number(raw)
+    if (Number.isFinite(env) && env >= 0) return Math.floor(env)
+  }
+  return configured > 0 ? configured : DEFAULT_QUESTION_WATCHDOG_TIMEOUT_MS
+}
+
+/**
  * Host-plane Prime Orchestration service.
  *
  * Owns the shared delegation table, the exit hook, the `prime` settings
@@ -1622,6 +1650,8 @@ export class PrimeOrchestration extends Service {
   private readonly rowConfig: Config
   /** Short-lived daemon roster cache: `prime-agent list --json` is a subprocess. */
   private rosterCache: { at: number; promise: Promise<ListAgentsResult> } | null = null
+  /** Question watchdog mounted with the web server; null before/without one. */
+  private questionWatchdog: QuestionWatchdog | null = null
 
   constructor(ctx: Context, rowConfig: Config) {
     super(ctx, 'prime')
@@ -1662,6 +1692,10 @@ export class PrimeOrchestration extends Service {
       delegateGoalTokenBudget: 0,
       delegateAutonomous: false,
       delegateAutonomousMaxContinuations: 0,
+      questionWatchdogEnabled: true,
+      questionWatchdogTimeoutMs: 0,
+      questionWatchdogStrategy: '',
+      questionNotifyEnabled: true,
     }
     this.resolvedConfig = deepFreeze(this.toConfig(fallbackSettings))
 
@@ -1707,6 +1741,28 @@ export class PrimeOrchestration extends Service {
           return () => {}
         }
       }), 'webServer.register(/prime)')
+      // Question watchdog: observe the mux as an ordinary client (the same
+      // frames a browser gets) and auto-answer pending questions after the
+      // configured timeout. Mounted with the web server so /prime/api/questions
+      // and the respond relay live next to the route they serve.
+      webCtx.effect(() => {
+        this.questionWatchdog = new QuestionWatchdog({
+          host: webServer.host === '0.0.0.0' ? '127.0.0.1' : webServer.host,
+          port: webServer.port,
+          getConfig: () => ({
+            enabled: this.config.questionWatchdogEnabled,
+            timeoutMs: this.config.questionWatchdogTimeoutMs,
+            strategy: this.config.questionWatchdogStrategy,
+            notifyEnabled: this.config.questionNotifyEnabled,
+          }),
+          log: message => { console.log(message) },
+        })
+        this.questionWatchdog.start()
+        return () => {
+          this.questionWatchdog?.stop()
+          this.questionWatchdog = null
+        }
+      }, 'prime.questionWatchdog()')
       return () => {}
     })
   }
@@ -2436,6 +2492,12 @@ export class PrimeOrchestration extends Service {
       defaultGoalTokenBudget: value.delegateGoalTokenBudget,
       defaultAutonomous: value.delegateAutonomous,
       defaultAutonomousMaxContinuations: value.delegateAutonomousMaxContinuations,
+      questionWatchdogEnabled: value.questionWatchdogEnabled,
+      questionWatchdogTimeoutMs: resolveQuestionWatchdogTimeoutMs(value.questionWatchdogTimeoutMs),
+      questionWatchdogStrategy: QUESTION_WATCHDOG_STRATEGIES.includes(value.questionWatchdogStrategy as QuestionWatchdogStrategy)
+        ? (value.questionWatchdogStrategy as QuestionWatchdogStrategy)
+        : 'recommended',
+      questionNotifyEnabled: value.questionNotifyEnabled,
     })
   }
 
@@ -2450,6 +2512,38 @@ export class PrimeOrchestration extends Service {
       }
       if (url.pathname === '/prime/api/state' && req.method === 'GET') {
         sendJson(res, 200, this.state())
+        return
+      }
+      if (url.pathname === '/prime/api/questions' && req.method === 'GET') {
+        const watchdog = this.questionWatchdog
+        sendJson(res, 200, watchdog === null
+          ? { ok: true, active: false, config: null, pending: [], recent: [] }
+          : { ok: true, ...watchdog.state() })
+        return
+      }
+      if (url.pathname === '/prime/api/questions/respond' && req.method === 'POST') {
+        const watchdog = this.questionWatchdog
+        if (watchdog === null) {
+          sendJson(res, 503, { ok: false, error: 'question watchdog is not mounted (no web server)' })
+          return
+        }
+        const body = (await readBody(req)) as Record<string, unknown>
+        const rpcId = typeof body.rpcId === 'string' ? body.rpcId : ''
+        if (rpcId === '') {
+          sendJson(res, 400, { ok: false, error: '"rpcId" is required' })
+          return
+        }
+        let action: { answers: WatchdogAnswerItem[] } | { cancel: true }
+        if (body.cancel === true) {
+          action = { cancel: true }
+        } else if (Array.isArray(body.answers)) {
+          action = { answers: body.answers as WatchdogAnswerItem[] }
+        } else {
+          sendJson(res, 400, { ok: false, error: '"answers" (array) or "cancel": true is required' })
+          return
+        }
+        const result = await watchdog.respond(rpcId, action, 'user')
+        sendJson(res, result.accepted ? 200 : 409, { ok: result.accepted, ...result })
         return
       }
       if (url.pathname === '/prime/api/agents' && req.method === 'GET') {

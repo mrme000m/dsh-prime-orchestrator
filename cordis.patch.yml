@@ -24,9 +24,12 @@
 #                                      tool, the workflow prompt section, and
 #                                      the bundled prime-agent skill.
 #   - browser half (exports "./client",
-#     declared via dsh.client):        the Prime fleet column, its
-#                                      sidebar-foot trigger, and the Settings →
-#                                      Prime Orchestration section.
+#     declared via dsh.client):        the pending-questions banner
+#                                      (shell.overlay seat). The Prime fleet
+#                                      column and the Settings → Prime
+#                                      Orchestration section live in the harness
+#                                      core's @deepseek-ai/dsh-client-ui-prime
+#                                      and @deepseek-ai/dsh-client-ui-prime-settings.
 #
 # If a profile already carries a manual mount line for this plugin (or for
 # the older @deepseek-ai/dsh-prime-* workspace packages) in its own
@@ -46,3 +49,9 @@
     # Resolves the BW_SESSION credential through the host credential seam.
     - id: bw-tools
       name: 'dsh-prime-orchestrator/bw-tools'
+    # WunderTrading access tools: wt_status, wt_session, wt_login,
+    # wt_browse, wt_api (HMAC REST), wt_apikey, wt_mcp — wrapping the
+    # bundled bin/wt.mjs CLI (bdg + headful CloakBrowser sessions,
+    # Bitwarden-persisted cookies) and registering the wt-network skill.
+    - id: wt-tools
+      name: 'dsh-prime-orchestrator/wt-tools'

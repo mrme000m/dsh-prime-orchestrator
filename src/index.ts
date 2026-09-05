@@ -37,6 +37,14 @@ export {
   resolveSessionIdentity, readSessionFileEvents, resolveSessionFileIn,
   heartbeatView, delegationView, buildDelegateArgv, buildDaemonCreateConfig, classifyToolCode,
 } from './engine.ts'
+export {
+  QuestionWatchdog, buildAutoAnswer, pickOptionLabel,
+  DEFAULT_QUESTION_WATCHDOG_TIMEOUT_MS, QUESTION_WATCHDOG_STRATEGIES,
+} from './question-watchdog.ts'
+export type {
+  QuestionWatchdogConfig, QuestionWatchdogStrategy, QuestionActionRecord,
+  PendingQuestionView, WatchdogAnswerItem, WatchdogQuestionItem, WatchdogQuestionOption,
+} from './question-watchdog.ts'
 export type { Config as PrimeRowConfig } from './engine.ts'
 export type {
   ResolveIdentityOptions,

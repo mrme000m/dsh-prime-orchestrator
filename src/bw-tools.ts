@@ -2,12 +2,26 @@
  * Model-facing Bitwarden CLI tools for the Prime Orchestrator plugin.
  *
  * This plugin contributes read-only tools that wrap the local `bw` CLI:
- * `bw_status` (vault status), `bw_list` (search/list vault objects), and
- * `bw_get` (retrieve one object or field). It owns no state; every call
- * resolves the Bitwarden session key through the host credential seam
- * (`ctx.credentials`) so a rotated credential reaches the next call without
- * a restart. Write operations (create, edit, delete, share) are intentionally
- * omitted from the model-facing surface.
+ * `bw_accounts` (registered accounts + lock state), `bw_use` (switch the
+ * active account), `bw_status` (vault status), `bw_list` (search/list vault
+ * objects), and `bw_get` (retrieve one object or field). It owns no state;
+ * every call resolves the active account's session key through the host
+ * credential seam (`ctx.credentials`) so a rotated credential reaches the
+ * next call without a restart.
+ *
+ * ## Multi-account
+ *
+ * The `bw` CLI keeps one active account per data directory and has no
+ * switch-account subcommand, so accounts are isolated by data directory
+ * (`BITWARDENCLI_APPDATA_DIR`, default the CLI's own) and selected per
+ * operation: an optional `account` argument on every tool names a
+ * registered account, and `bw_use` changes the default for subsequent
+ * calls. Session keys are per-account credential references derived from
+ * each account's `sessionEnv` (e.g. `BW_SESSION_WORK`), following the
+ * credential seam doctrine: configuration carries references, never values.
+ *
+ * Write operations (create, edit, delete, share) are intentionally omitted
+ * from the model-facing surface.
  * @module dsh-prime-orchestrator/bw-tools
  */
 
@@ -24,7 +38,10 @@ export const name = 'bw-tools'
 /** Hard service dependencies: the tool registry and the credential seam. */
 export const inject = ['tools', 'credentials']
 
-/** Credential-reference env name resolved for the Bitwarden session key. */
+/** Default active account name when `defaultAccount` is not configured. */
+const DEFAULT_ACCOUNT = 'default'
+
+/** Credential-reference env name for the unnamed default account. */
 const DEFAULT_SESSION_ENV = 'BW_SESSION'
 
 /** CLI path. */
@@ -49,18 +66,44 @@ const GET_OBJECTS = [
   'organization', 'template', 'fingerprint',
 ] as const
 
-/** Plugin config: session credential reference, CLI path, timeout. */
+/** One registered Bitwarden account. */
+export interface BwAccount {
+  /** Credential-reference env name holding this account's session key. */
+  sessionEnv: string
+  /**
+   * Per-account CLI data directory, passed to the child as
+   * `BITWARDENCLI_APPDATA_DIR` so accounts stay isolated; absent means the
+   * CLI's own default directory (the single-account layout).
+   */
+  dataDir?: string
+}
+
+/** Plugin config: accounts, default account, CLI path, timeout. */
 export interface Config {
-  /** Credential-reference env name holding the `bw` session key. */
-  sessionEnv?: string
+  /** Registered accounts by name. The `default` entry is always present. */
+  accounts: Record<string, BwAccount>
+  /** Account name used when a tool call omits `account`; default `default`. */
+  defaultAccount: string
   /** Path to the `bw` executable; default `bw` (resolved from PATH). */
   cliPath?: string
   /** Per-command timeout in milliseconds. */
   timeoutMs?: number
 }
 
+/** One resolved account: config plus the name it was registered under. */
+export interface ResolvedAccount extends BwAccount {
+  /** Registration name of this account. */
+  account: string
+}
+
+const accountSchema = z.object({
+  sessionEnv: z.string().min(1),
+  dataDir: z.string().min(1),
+})
+
 export const Config: z<Config> = z.object({
-  sessionEnv: z.string().min(1).default(DEFAULT_SESSION_ENV),
+  accounts: z.dict(accountSchema).default({}),
+  defaultAccount: z.string().min(1).default(DEFAULT_ACCOUNT),
   cliPath: z.string().min(1).default(DEFAULT_CLI),
   timeoutMs: z.number().step(1).min(1_000).max(3_600_000).default(DEFAULT_TIMEOUT_MS),
 })
@@ -92,6 +135,45 @@ export function parseOutput(text: string): { ok: true; value: JsonValue } | { ok
   }
 }
 
+/**
+ * Resolve one account by name against the config, failing loud on unknowns.
+ *
+ * With no `accounts` configured, one implicit entry named `default` carries
+ * the plugin's original `BW_SESSION` reference and the CLI's own data
+ * directory — the single-account layout. An explicit `accounts.default`
+ * entry replaces it wholesale.
+ * @param config - resolved plugin config.
+ * @param name - account name from a tool call, or the configured default.
+ * @returns the account config with its registration name.
+ */
+export function resolveAccount(config: Config, name: string | undefined): ResolvedAccount {
+  const wanted = (name ?? '').trim() || config.defaultAccount
+  const registry: Record<string, BwAccount> = Object.keys(config.accounts).length > 0
+    ? config.accounts
+    : { [DEFAULT_ACCOUNT]: { sessionEnv: DEFAULT_SESSION_ENV } }
+  const account = registry[wanted]
+  if (account === undefined) {
+    throw new Error(
+      `bw-tools: UNKNOWN_ACCOUNT — "${wanted}" is not a registered account. Registered: ${Object.keys(registry).join(', ')}. Use bw_accounts to list them.`,
+    )
+  }
+  return { account: wanted, ...account }
+}
+
+/**
+ * Normalize an `account` argument from a tool call.
+ * @param args - raw tool arguments.
+ * @returns the trimmed account name, or undefined when absent/blank.
+ */
+export function readAccountArg(args: unknown): string | undefined {
+  if (!isRecord(args)) return undefined
+  const value = args['account']
+  if (value === undefined) return undefined
+  if (typeof value !== 'string') throw new Error('bw-tools: account must be a string')
+  const trimmed = value.trim()
+  return trimmed === '' ? undefined : trimmed
+}
+
 /** Resolve the session key through the credential seam, returning undefined when absent. */
 async function resolveSession(ctx: Context, sessionEnv: string): Promise<string | undefined> {
   const resolved = await ctx.credentials.resolve(credentialRef(sessionEnv))
@@ -99,9 +181,9 @@ async function resolveSession(ctx: Context, sessionEnv: string): Promise<string 
 }
 
 /** Require a session for operations that read vault contents. */
-function requireSession(session: string | undefined, sessionEnv: string): string {
+function requireSession(session: string | undefined, sessionEnv: string, account: string): string {
   if (session === undefined) {
-    throw new Error(`bw-tools: MISSING_CREDENTIAL — ${sessionEnv} is not set: store a Bitwarden session key under the ${sessionEnv} credential reference (run "bw unlock" to obtain one)`)
+    throw new Error(`bw-tools: MISSING_CREDENTIAL — ${sessionEnv} is not set: store the account "${account}" session key under the ${sessionEnv} credential reference (run "bw unlock" with that account active to obtain one)`)
   }
   return session
 }
@@ -113,6 +195,7 @@ function requireSession(session: string | undefined, sessionEnv: string): string
  * @param args - subcommand arguments (e.g. ['status']).
  * @param timeoutMs - command timeout.
  * @param signal - caller cancellation signal.
+ * @param dataDir - per-account `BITWARDENCLI_APPDATA_DIR`, or undefined for the CLI default.
  * @returns parsed JSON output, or raw text if `bw` emitted non-JSON.
  */
 export function runBw(
@@ -121,14 +204,16 @@ export function runBw(
   args: readonly string[],
   timeoutMs: number,
   signal?: AbortSignal,
+  dataDir?: string,
 ): Promise<JsonValue> {
   const bwArgs = [...args, '--raw']
   if (session !== undefined) bwArgs.push('--session', session)
+  const env = dataDir === undefined ? undefined : { ...process.env, BITWARDENCLI_APPDATA_DIR: dataDir }
   return new Promise((resolve, reject) => {
     const child = execFile(
       cliPath,
       bwArgs,
-      { timeout: timeoutMs, ...(signal ? { signal } : {}) },
+      { timeout: timeoutMs, ...(signal ? { signal } : {}), ...(env ? { env } : {}) },
       (err, stdout, stderr) => {
         if (err) {
           const detail = stderr.trim() || errorMessage(err)
@@ -145,73 +230,123 @@ export function runBw(
 
 /** Validate `bw_get` arguments and normalize them into CLI args. */
 export function makeGetArgs(args: unknown): { object: string; id: string; raw: boolean } {
-  if (!isRecord(args)) throw new Error('bw_get: arguments must be an object')
-  if (typeof args.object !== 'string' || !(GET_OBJECTS as readonly string[]).includes(args.object)) {
-    throw new Error(`bw_get: "object" must be one of: ${GET_OBJECTS.join(', ')}`)
+  if (!isRecord(args)) throw new Error('bw-tools: arguments must be an object')
+  const object = args['object']
+  if (typeof object !== 'string' || !GET_OBJECTS.includes(object as (typeof GET_OBJECTS)[number])) {
+    throw new Error(`bw-tools: object must be one of ${GET_OBJECTS.join(', ')}`)
   }
-  if (typeof args.id !== 'string' || args.id.trim() === '') {
-    throw new Error('bw_get: "id" is required and must be a non-empty string')
-  }
-  if (args.raw !== undefined && typeof args.raw !== 'boolean') {
-    throw new Error('bw_get: "raw" must be a boolean when provided')
-  }
-  return { object: args.object, id: args.id.trim(), raw: args.raw === true }
+  const id = args['id']
+  if (typeof id !== 'string' || id.trim() === '') throw new Error('bw-tools: id must be a non-empty string')
+  const raw = args['raw']
+  if (raw !== undefined && typeof raw !== 'boolean') throw new Error('bw-tools: raw must be a boolean')
+  return { object, id: id.trim(), raw: raw === true }
 }
 
 /** Validate `bw_list` arguments and normalize them into CLI args. */
 export function makeListArgs(args: unknown): { object: string; search?: string; folderid?: string; collectionid?: string; trash?: boolean } {
-  if (!isRecord(args)) throw new Error('bw_list: arguments must be an object')
-  if (typeof args.object !== 'string' || !(LIST_OBJECTS as readonly string[]).includes(args.object)) {
-    throw new Error(`bw_list: "object" must be one of: ${LIST_OBJECTS.join(', ')}`)
+  if (!isRecord(args)) throw new Error('bw-tools: arguments must be an object')
+  const object = args['object']
+  if (typeof object !== 'string' || !LIST_OBJECTS.includes(object as (typeof LIST_OBJECTS)[number])) {
+    throw new Error(`bw-tools: object must be one of ${LIST_OBJECTS.join(', ')}`)
   }
-  for (const key of ['search', 'folderid', 'collectionid'] as const) {
+  const takeString = (key: string): string | undefined => {
     const value = args[key]
-    if (value !== undefined && (typeof value !== 'string' || value.trim() === '')) {
-      throw new Error(`bw_list: "${key}" must be a non-empty string when provided`)
-    }
+    if (value === undefined) return undefined
+    if (typeof value !== 'string' || value.trim() === '') throw new Error(`bw-tools: ${key} must be a non-empty string`)
+    return value.trim()
   }
-  if (args.trash !== undefined && typeof args.trash !== 'boolean') {
-    throw new Error('bw_list: "trash" must be a boolean when provided')
-  }
+  const trash = args['trash']
+  if (trash !== undefined && typeof trash !== 'boolean') throw new Error('bw-tools: trash must be a boolean')
   return {
-    object: args.object,
-    search: args.search as string | undefined,
-    folderid: args.folderid as string | undefined,
-    collectionid: args.collectionid as string | undefined,
-    trash: args.trash as boolean | undefined,
+    object,
+    search: takeString('search'),
+    folderid: takeString('folderid'),
+    collectionid: takeString('collectionid'),
+    trash: trash === true ? true : undefined,
   }
 }
 
 /** Render any BW result as bounded pretty JSON. */
 export function renderJson(_args: unknown, value: unknown): ContentBlock[] {
-  const text = JSON.stringify(value, null, 2)
-  return [{ type: 'text', text: bounded(text, RENDER_CHAR_LIMIT) }]
+  return [{ type: 'text', text: bounded(JSON.stringify(value, null, 2), RENDER_CHAR_LIMIT) }]
 }
 
 /**
- * Register the read-only Bitwarden CLI tools.
+ * Register the read-only Bitwarden CLI tools with multi-account support.
  * @param ctx - Cordis context carrying the host `tools` and `credentials` services.
- * @param config - resolved config (sessionEnv, cliPath, timeoutMs).
+ * @param config - resolved config (accounts, defaultAccount, cliPath, timeoutMs).
  */
 export function apply(ctx: Context, config: Config): void {
-  const sessionEnv = config.sessionEnv ?? DEFAULT_SESSION_ENV
   const cliPath = config.cliPath ?? DEFAULT_CLI
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  /** Account name `bw_use` last selected; undefined means the row default. */
+  let selectedAccount: string | undefined
+
+  const accountParam: { type: 'string'; description: string } = {
+    type: 'string',
+    description: 'Account to operate on (see bw_accounts); defaults to the active account set by bw_use or the row default.',
+  }
+
+  ctx.tools.register(defineTool({
+    name: 'bw_accounts',
+    description: 'List the registered Bitwarden accounts, the active account, and each account\'s lock state (needs its session credential only to report "unlocked"). Use bw_use to switch the active account.',
+    parameters: {},
+    output: { schema: { type: 'json' }, render: renderJson },
+    async execute() {
+      const registry: Record<string, BwAccount> = Object.keys(config.accounts).length > 0
+        ? config.accounts
+        : { [DEFAULT_ACCOUNT]: { sessionEnv: DEFAULT_SESSION_ENV } }
+      const active = selectedAccount ?? config.defaultAccount
+      const entries = await Promise.all(Object.entries(registry).map(async ([name, account]) => {
+        const status = await runBw(cliPath, undefined, ['status'], timeoutMs, undefined, account.dataDir).catch((err: unknown) => errorMessage(err))
+        const record = isRecord(status) ? status : {}
+        return {
+          account: name,
+          active: name === active,
+          sessionEnv: account.sessionEnv,
+          dataDir: account.dataDir ?? null,
+          status: record['status'] ?? 'unknown',
+          userEmail: record['userEmail'] ?? null,
+          serverUrl: record['serverUrl'] ?? null,
+        }
+      }))
+      return { accounts: entries }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'bw_use',
+    description: 'Switch the active Bitwarden account for subsequent bw_* tool calls (bw_status, bw_list, bw_get). The choice persists for this session; list accounts with bw_accounts.',
+    parameters: {
+      account: {
+        type: 'string',
+        required: true,
+        description: 'Account name to make active (see bw_accounts).',
+      },
+    },
+    output: { schema: { type: 'json' }, render: renderJson },
+    async execute(args) {
+      const account = resolveAccount(config, readAccountArg(args))
+      selectedAccount = account.account
+      return { account: account.account, sessionEnv: account.sessionEnv }
+    },
+  }))
 
   ctx.tools.register(defineTool({
     name: 'bw_status',
-    description: 'Check the Bitwarden vault status (server, last sync, user, lock state) via the local bw CLI.',
-    parameters: {},
+    description: 'Check the active Bitwarden account\'s vault status (server, last sync, user, lock state) via the local bw CLI. List or switch accounts with bw_accounts / bw_use.',
+    parameters: { account: accountParam },
     output: { schema: { type: 'json' }, render: renderJson },
-    async execute(_args, exec) {
-      const session = await resolveSession(ctx, sessionEnv)
-      return runBw(cliPath, session, ['status'], timeoutMs, exec.signal)
+    async execute(args, exec) {
+      const account = resolveAccount(config, readAccountArg(args) ?? selectedAccount)
+      const session = await resolveSession(ctx, account.sessionEnv)
+      return runBw(cliPath, session, ['status'], timeoutMs, exec.signal, account.dataDir)
     },
   }))
 
   ctx.tools.register(defineTool({
     name: 'bw_list',
-    description: 'List or search vault objects (items, folders, collections, organizations, org-collections, org-members) via the local bw CLI. Use bw_get to retrieve a specific object.',
+    description: 'List or search vault objects (items, folders, collections, organizations, org-collections, org-members) of the active account via the local bw CLI. Use bw_get to retrieve a specific object; bw_accounts / bw_use to switch account.',
     parameters: {
       object: {
         type: 'string',
@@ -235,23 +370,25 @@ export function apply(ctx: Context, config: Config): void {
         type: 'boolean',
         description: 'Include soft-deleted items.',
       },
+      account: accountParam,
     },
     output: { schema: { type: 'json' }, render: renderJson },
     async execute(args, exec) {
       const a = makeListArgs(args)
-      const session = requireSession(await resolveSession(ctx, sessionEnv), sessionEnv)
+      const account = resolveAccount(config, readAccountArg(args) ?? selectedAccount)
+      const session = requireSession(await resolveSession(ctx, account.sessionEnv), account.sessionEnv, account.account)
       const bwArgs = ['list', a.object]
       if (a.search) bwArgs.push('--search', a.search)
       if (a.folderid) bwArgs.push('--folderid', a.folderid)
       if (a.collectionid) bwArgs.push('--collectionid', a.collectionid)
       if (a.trash) bwArgs.push('--trash')
-      return runBw(cliPath, session, bwArgs, timeoutMs, exec.signal)
+      return runBw(cliPath, session, bwArgs, timeoutMs, exec.signal, account.dataDir)
     },
   }))
 
   ctx.tools.register(defineTool({
     name: 'bw_get',
-    description: 'Retrieve one Bitwarden vault object or field (item, username, password, uri, totp, notes, folder, collection, organization, etc.) by id or search term via the local bw CLI.',
+    description: 'Retrieve one Bitwarden vault object or field (item, username, password, uri, totp, notes, folder, collection, organization, etc.) by id or search term from the active account via the local bw CLI. Use bw_list to find ids; bw_accounts / bw_use to switch account.',
     parameters: {
       object: {
         type: 'string',
@@ -268,14 +405,16 @@ export function apply(ctx: Context, config: Config): void {
         type: 'boolean',
         description: 'Return the raw stored value for text fields (passwords, notes) instead of the usual JSON envelope.',
       },
+      account: accountParam,
     },
     output: { schema: { type: 'json' }, render: renderJson },
     async execute(args, exec) {
       const a = makeGetArgs(args)
-      const session = requireSession(await resolveSession(ctx, sessionEnv), sessionEnv)
+      const account = resolveAccount(config, readAccountArg(args) ?? selectedAccount)
+      const session = requireSession(await resolveSession(ctx, account.sessionEnv), account.sessionEnv, account.account)
       const bwArgs = ['get', a.object, a.id]
       if (a.raw) bwArgs.push('--raw')
-      return runBw(cliPath, session, bwArgs, timeoutMs, exec.signal)
+      return runBw(cliPath, session, bwArgs, timeoutMs, exec.signal, account.dataDir)
     },
   }))
 }

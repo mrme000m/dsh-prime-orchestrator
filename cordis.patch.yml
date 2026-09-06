@@ -45,10 +45,10 @@
     # Workers AI without the pi-ai SDK layer.
     - id: llm-cf-provider
       name: 'dsh-prime-orchestrator/llm-cf-provider'
-    # Read-only Bitwarden CLI wrappers: bw_status, bw_list, bw_get.
-    # Resolves the BW_SESSION credential through the host credential seam.
-    - id: bw-tools
-      name: 'dsh-prime-orchestrator/bw-tools'
+    # Bitwarden vault tools moved to the agent preset (presets/prime-orchestrator/
+    # agent.cordis.yml, row `bw-tools`): the account registry is per-preset
+    # config, and the tools register into the host `tools` registry from the
+    # preset's standing scope.
     # WunderTrading access tools: wt_status, wt_session, wt_login,
     # wt_browse, wt_api (HMAC REST), wt_apikey, wt_mcp — wrapping the
     # bundled bin/wt.mjs CLI (bdg + headful CloakBrowser sessions,

@@ -281,6 +281,28 @@
 - id: cf-tools
   name: 'dsh-prime-orchestrator/cf-tools'
 
+# ── bitwarden vault (multi-account) ─────────────────────────────────────────
+
+# Read-only Bitwarden vault access with multi-account support: bw_accounts
+# (list accounts + lock state), bw_use (switch the active account), bw_status,
+# bw_list, bw_get (each taking an optional `account` argument). Accounts are
+# registered here — name → { sessionEnv, dataDir } — and each account's session
+# key is a credential reference (config carries references, never values), so
+# `dsh` resolves them from the credential seam (env, $DSH_HOME/.credentials.yaml,
+# or user .env) at call time. The CLI-level isolation is BITWARDENCLI_APPDATA_DIR
+# per account; the preset's own account keeps the bw CLI default directory.
+# To register another account, add an entry with its own sessionEnv (e.g.
+# BW_SESSION_SECOND) and, when it must not share the default data directory,
+# a dataDir pointing at its own BITWARDENCLI_APPDATA_DIR.
+- id: bw-tools
+  name: 'dsh-prime-orchestrator/bw-tools'
+  config:
+    accounts:
+      main:
+        sessionEnv: BW_SESSION
+    defaultAccount: main
+
+
 # ── prime-agent orchestration ───────────────────────────────────────────────
 
 # The Prime Agent orchestration engine lives on the HOST plane (the

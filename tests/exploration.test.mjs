@@ -24,8 +24,22 @@ test('classifyToolCode treats reads as read', () => {
     'git status',
     'ls -la',
     'print(lines)',
+    'lines.append("x")',
+    'result["key"].append(v)',
   ]) {
     assert.equal(classifyToolCode(code), 'read', `expected read: ${code}`)
+  }
+})
+
+test('classifyToolCode flags standalone append/write/edit as write', () => {
+  for (const code of [
+    'append("a.txt", "x")',
+    'append("x")',
+    '  append(f, "x")',
+    'write(f, "x")',
+    'edit(f, "x")',
+  ]) {
+    assert.equal(classifyToolCode(code), 'write', `expected write: ${code}`)
   }
 })
 

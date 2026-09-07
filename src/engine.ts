@@ -415,7 +415,8 @@ const EXPLORATION_READ_TURN_LIMIT = 8
 const WRITE_CODE_PATTERNS: RegExp[] = [
   /\.write_text\s*\(/,
   /open\s*\([^)]*['"][wax][b+]?['"]/,
-  /\b(?:edit|write|append)\s*\(/,
+  /\b(?:edit|write)\s*\(/,
+  /(?:^|[^\w.])\bappend\s*\(/,
   /\bsed\s+-i/,
   /\btee\s+/,
   /\bmv\s+\S/,
@@ -496,7 +497,11 @@ export function buildDaemonCreateConfig(id: string, input: PrimeDelegateRequest 
   const systemPrompt = str(input.briefing)
     ?? (Array.isArray(input.appendSystemPrompt) ? input.appendSystemPrompt.filter((x): x is string => typeof x === 'string' && x.length > 0).join('\n') || undefined : undefined)
   put('systemPrompt', systemPrompt)
-  put('goal', str(input.goal))
+  const goal = str(input.goal)
+  if (goal !== undefined) {
+    const budget = int(input.goalTokenBudget)
+    config.initialGoal = { objective: goal, ...(budget !== undefined ? { tokenBudget: budget } : {}) }
+  }
   if (input.autonomous === true) {
     const gates = Array.isArray(input.autonomousGates) ? input.autonomousGates.filter((x): x is string => typeof x === 'string' && x.length > 0) : []
     config.autonomous = {
@@ -1220,6 +1225,10 @@ export function daemonRequest(config: PrimeConfig, command: Record<string, unkno
         fail(`daemon socket error: ${messageOf(error)}`)
       }
     })
+    socket.on('close', () => {
+      fail(`daemon closed the connection while awaiting "${command.type}"`)
+    })
+
   })
 }
 

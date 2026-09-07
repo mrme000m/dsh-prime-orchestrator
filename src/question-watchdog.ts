@@ -374,6 +374,7 @@ export class QuestionWatchdog {
     const config = this.opts.getConfig()
     if (!config.enabled) {
       this.record({ at: Date.now(), rpcId: entry.rpcId, sessionId: entry.sessionId, action: 'skipped-disabled', strategy: 'off', detail: 'watchdog disabled while waiting' })
+      this.settle(entry.rpcId)
       return
     }
     const outcome = buildAutoAnswer(entry.questions, config.strategy)

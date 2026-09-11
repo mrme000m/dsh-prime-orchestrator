@@ -483,9 +483,9 @@ test('apply registers the adapter under cf-workers-ai-native through an effect',
   assert.equal(typeof adapter.stream, 'function')
   assert.deepEqual((await adapter.listModels(PROVIDER)).map((m) => m.id), DEFAULT_MODELS.map((m) => m.id))
   // resolveModel identity: catalog metadata plus text-only modality.
-  const info = await adapter.resolveModel(PROVIDER, '@cf/meta/llama-3.3-70b-instruct-fp8-fast')
-  assert.equal(info.id, '@cf/meta/llama-3.3-70b-instruct-fp8-fast')
-  assert.deepEqual(info.context, { contextWindow: 131072 })
+  const info = await adapter.resolveModel(PROVIDER, '@cf/openai/gpt-oss-120b')
+  assert.equal(info.id, '@cf/openai/gpt-oss-120b')
+  assert.deepEqual(info.context, { contextWindow: 128000 })
   assert.equal(info.defaultMaxTokens, 16384)
   assert.deepEqual(info.inputModalities, ['text'])
   assert.equal(adapter.providerInfo(PROVIDER).name, 'Cloudflare Workers AI')

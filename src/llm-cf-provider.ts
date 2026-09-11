@@ -56,13 +56,18 @@ const ACCOUNT_ENV = 'CF_ACCOUNT_ID'
  * catalog membership is advisory).
  */
 export const DEFAULT_MODELS: readonly CfCatalogModel[] = [
-  { id: '@cf/deepseek-ai/deepseek-v4-flash-0731', contextWindow: 131072, maxTokens: 16384 },
-  { id: '@cf/deepseek-ai/deepseek-v4-pro-0813', contextWindow: 131072, maxTokens: 16384 },
+  { id: '@cf/zai-org/glm-5.3-flash', contextWindow: 1310720, maxTokens: 16384 },
+  { id: '@cf/deepseek-ai/deepseek-v4-flash-0731', contextWindow: 1310720, maxTokens: 16384 },
+  { id: '@cf/deepseek-ai/deepseek-v4-pro-0813', contextWindow: 1048576, maxTokens: 16384 },
+  { id: '@cf/openai/gpt-oss-120b', contextWindow: 128000, maxTokens: 16384 },
+  { id: '@cf/google/gemma-4-26b-a4b-it', contextWindow: 256000, maxTokens: 16384 },
+  { id: '@cf/nvidia/nemotron-3-120b-a12b', contextWindow: 256000, maxTokens: 16384 },
+  { id: '@cf/openai/gpt-oss-20b', contextWindow: 128000, maxTokens: 16384 },
+  { id: '@cf/zai-org/glm-4.7-flash', contextWindow: 131072, maxTokens: 16384 },
   { id: '@cf/zai-org/glm-5.2', contextWindow: 262144, maxTokens: 16384 },
-  { id: '@cf/zai-org/glm-5.3', contextWindow: 262144, maxTokens: 16384 },
   { id: '@cf/moonshotai/kimi-k2.7-code', contextWindow: 262144, maxTokens: 16384 },
+  { id: '@cf/moonshotai/kimi-k2.6', contextWindow: 262144, maxTokens: 16384 },
   { id: '@cf/qwen/qwen3.8-27b', contextWindow: 262144, maxTokens: 16384 },
-  { id: '@cf/meta/llama-3.3-70b-instruct-fp8-fast', contextWindow: 131072, maxTokens: 16384 },
 ]
 
 /** Plugin config: account, credential reference, timeouts, catalog, retry policy. */

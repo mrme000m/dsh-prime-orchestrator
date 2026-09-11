@@ -1557,8 +1557,8 @@ const PrimeSettingsSchema: z<PrimeSettings> = z.object({
   daemonSocket: z.string().default(''),
   heartbeatIntervalMs: z.number().default(0),
   heartbeatTimeoutMs: z.number().default(0),
-  delegateModel: z.string().default(''),
-  delegateProvider: z.string().default(''),
+  delegateModel: z.string().default('@cf/zai-org/glm-5.3-flash'),
+  delegateProvider: z.string().default('cloudflare-workers-ai'),
   delegateThinking: z.string().default(''),
   delegateGoalTokenBudget: z.number().default(0),
   delegateAutonomous: z.boolean().default(false),
@@ -1695,8 +1695,8 @@ export class PrimeOrchestration extends Service {
       daemonSocket: entry.daemonSocket ?? '',
       heartbeatIntervalMs: 0,
       heartbeatTimeoutMs: 0,
-      delegateModel: '',
-      delegateProvider: '',
+      delegateModel: '@cf/zai-org/glm-5.3-flash',
+      delegateProvider: 'cloudflare-workers-ai',
       delegateThinking: '',
       delegateGoalTokenBudget: 0,
       delegateAutonomous: false,
@@ -1713,7 +1713,7 @@ export class PrimeOrchestration extends Service {
         const scope = settingsCtx.settings.register(
           settingsNamespace(SETTINGS_NAMESPACE),
           PrimeSettingsSchema,
-          { base: { enabled: true, maxDelegations: entry.maxDelegations, bin: entry.bin, stateDir: entry.stateDir, daemonSocket: entry.daemonSocket ?? '', heartbeatIntervalMs: 0, heartbeatTimeoutMs: 0, delegateModel: '', delegateProvider: '', delegateThinking: '', delegateGoalTokenBudget: 0, delegateAutonomous: false, delegateAutonomousMaxContinuations: 0 } },
+          { base: { enabled: true, maxDelegations: entry.maxDelegations, bin: entry.bin, stateDir: entry.stateDir, daemonSocket: entry.daemonSocket ?? '', heartbeatIntervalMs: 0, heartbeatTimeoutMs: 0, delegateModel: '@cf/zai-org/glm-5.3-flash', delegateProvider: 'cloudflare-workers-ai', delegateThinking: '', delegateGoalTokenBudget: 0, delegateAutonomous: false, delegateAutonomousMaxContinuations: 0 } },
         )
         this.resolvedConfig = this.toConfig(scope.get())
         const unwatch = scope.watch((next) => {

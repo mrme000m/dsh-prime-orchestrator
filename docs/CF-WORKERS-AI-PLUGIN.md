@@ -45,12 +45,15 @@ timeout (`cf-aig-request-timeout`, measured to the first response byte) that cut
 requests whose provider does not start answering in time; streaming keeps the
 connection alive only while chunks keep arriving.
 
-The current default route (`cf-workers-deepseek` /
+The previous default route (`cf-workers-deepseek` /
 `@cf/deepseek-ai/deepseek-v4-flash-0731` with `contextWindow: 1000000`,
-`maxTokens: 256000`) invites the Timeout case: a 1M-context request with a 256K
-output cap is exactly the kind of long inference Cloudflare cuts. The duplicate
-`cloudflare-workers-ai` profile caps the same model at 131072/16384 and is the safer
-profile.
+`maxTokens: 256000`) invited the Timeout case: a 1M-context request with a 256K
+output cap was exactly the kind of long inference Cloudflare cuts. The
+`cf-workers-ai-native` route (this bundle's `llm-cf-provider`) now defaults
+delegations to `@cf/zai-org/glm-5.3-flash` (1,310,720 ctx / 16,384 out) — the
+large context stays, but the conservative 16K output cap avoids the long-inference
+timeout. The duplicate `cloudflare-workers-ai` pi-ai profile caps the same model
+at 131072/16384 and is the safer pi-ai profile.
 
 ### 1.3 Immediate mitigations (no code)
 
@@ -104,11 +107,11 @@ llm-pi-ai:
       models:
         - id: "@cf/deepseek-ai/deepseek-v4-flash-0731"
           name: CF Workers AI / DeepSeek V4 Flash 0731
-          contextWindow: 131072
+          contextWindow: 1310720
           maxTokens: 16384
         - id: "@cf/deepseek-ai/deepseek-v4-pro-0813"
           name: CF Workers AI / DeepSeek V4 Pro 0813
-          contextWindow: 131072
+          contextWindow: 1048576
           maxTokens: 16384
         # … keep the other @cf models with conservative caps
 ```
@@ -125,16 +128,16 @@ edge-side regardless.
 
 ## 2. Workers AI model catalog (CF-hosted `@cf/*`, verified 2026-09)
 
-82 first-party models run on Cloudflare's own GPU fleet. Workers AI also serves
+81 first-party models run on Cloudflare's own GPU fleet. Workers AI also serves
 `@hf/*` models hosted by Hugging Face and proxied by Cloudflare; only `@cf/*` are
 Cloudflare-hosted. Source: developers.cloudflare.com/workers-ai/models/ (fetched this
 session).
 
-### Text generation (chat/instruction) — 37
+### Text generation (chat/instruction) — 36
 
 `@cf/deepseek-ai/deepseek-r1-distill-qwen-32b` · `@cf/deepseek-ai/deepseek-v4-flash-0731`
 · `@cf/deepseek-ai/deepseek-v4-pro-0813` · `@cf/zai-org/glm-4.7-flash` ·
-`@cf/zai-org/glm-5.2` · `@cf/zai-org/glm-5.3` · `@cf/zai-org/glm-5.3-flash` ·
+`@cf/zai-org/glm-5.2` · `@cf/zai-org/glm-5.3-flash` ·
 `@cf/moonshotai/kimi-k2.5` · `@cf/moonshotai/kimi-k2.6` · `@cf/moonshotai/kimi-k2.7-code`
 · `@cf/qwen/qwen2.5-coder-32b-instruct` · `@cf/qwen/qwen3-30b-a3b-fp8` ·
 `@cf/qwen/qwen3.8-27b` · `@cf/qwen/qwq-32b` · `@cf/google/gemma-2b-it-lora` ·
